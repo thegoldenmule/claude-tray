@@ -55,6 +55,7 @@ final class UsageModel {
     @ObservationIgnored private var nextDueAt = Date.distantPast
     @ObservationIgnored private var rateLimitedUntil: Date?
     @ObservationIgnored private var consecutiveRateLimits = 0
+    @ObservationIgnored private var consecutiveKeychainFailures = 0
     @ObservationIgnored private var started = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
     @ObservationIgnored private var activity: (any NSObjectProtocol)?
@@ -148,6 +149,7 @@ final class UsageModel {
         do {
             // Read fresh every time: picks up tokens Claude Code has refreshed.
             let credentials = try await Credentials.load()
+            consecutiveKeychainFailures = 0
             guard !credentials.isExpired() else { throw UsageAPIError.tokenExpired }
             let result = try await UsageAPI.fetch(token: credentials.accessToken)
             snapshot = result
@@ -174,7 +176,13 @@ final class UsageModel {
             rateLimitedUntil = until
             nextDueAt = until
             message = "Rate limited — retrying in \(Self.formatMinutes(delay))"
-        case .notLoggedIn, .keychainUnavailable, .unreadableCredentials, .tokenExpired:
+        case .keychainUnavailable:
+            // Possibly a denied prompt or locked keychain: back off so we don't re-prompt every minute.
+            consecutiveKeychainFailures += 1
+            let delay = min(Self.maxBackoff, Self.credentialRecheckInterval * pow(2, Double(consecutiveKeychainFailures - 1)))
+            nextDueAt = now.addingTimeInterval(delay)
+            message = error.userMessage
+        case .notLoggedIn, .unreadableCredentials, .tokenExpired:
             // No usable token and no API call was made: re-check the Keychain sooner to recover quickly.
             nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
             message = error.userMessage

@@ -26,6 +26,8 @@ enum Credentials {
 
     /// `security` exit status when the item doesn't exist.
     nonisolated private static let errSecItemNotFoundExitCode: Int32 = 44
+    /// A Keychain prompt or locked keychain can block `security` indefinitely.
+    nonisolated private static let securityTimeout: TimeInterval = 15
 
     /// Reads Claude Code's OAuth credentials from the login Keychain.
     ///
@@ -53,15 +55,23 @@ enum Credentials {
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
 
+        let reader = stdout.fileHandleForReading
+        defer { try? reader.close() }
+
         do {
             try process.run()
         } catch {
             throw UsageAPIError.keychainUnavailable
         }
+        // Killing the process closes its end of the pipe, which unblocks the read below.
+        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + securityTimeout, execute: timeout)
         // Drain the pipe before waiting so a large item can't deadlock on a full pipe buffer.
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        let data = reader.readDataToEndOfFile()
         process.waitUntilExit()
+        timeout.cancel()
 
+        guard process.terminationReason == .exit else { throw UsageAPIError.keychainUnavailable }
         switch process.terminationStatus {
         case 0:
             return data
