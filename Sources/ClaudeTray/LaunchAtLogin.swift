@@ -9,7 +9,8 @@ import ServiceManagement
 /// keys the login item by bundle ID, not path: `status` reports `.enabled` from any
 /// copy with our bundle ID even when the registered URL points at another (possibly
 /// deleted) copy, and macOS can silently re-point it at any copy it finds. Calling
-/// `register()` from the running copy re-points it here, so we do that every launch.
+/// `register()` from the running copy re-points it here, so we do that every launch,
+/// unless the user has switched the item off in System Settings › Login Items.
 @MainActor
 enum LaunchAtLogin {
     private static let intentKey = "launchAtLogin"
@@ -40,7 +41,13 @@ enum LaunchAtLogin {
             defaults.set(true, forKey: intentKey)
         }
         guard isWanted else { return }
-        // Unconditional: status and any remembered path can't tell us where the
+        // Switched off in System Settings › Login Items: respect that rather than
+        // re-registering over it every launch. The panel offers a link to re-allow it.
+        if status == .requiresApproval {
+            log.notice("Login item needs approval in System Settings; not re-registering")
+            return
+        }
+        // Otherwise unconditional: status and any remembered path can't tell us where the
         // registered URL points, and register() is a cheap no-op-or-fix when enabled.
         register()
     }

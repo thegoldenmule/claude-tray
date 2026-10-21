@@ -4,6 +4,7 @@ import ServiceManagement
 
 struct UsagePanel: View {
     private let model: UsageModel
+    @State private var loginWanted = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
 
@@ -96,9 +97,10 @@ struct UsagePanel: View {
 
     // MARK: - Launch at login
 
+    /// Reflects the user's choice; the note below explains when the system isn't honoring it.
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
-            get: { loginStatus == .enabled },
+            get: { loginWanted },
             set: { newValue in
                 LaunchAtLogin.setWanted(newValue)
                 syncLaunchAtLogin()
@@ -108,24 +110,25 @@ struct UsagePanel: View {
 
     private func syncLaunchAtLogin() {
         guard LaunchAtLogin.isAvailable else { return }
+        loginWanted = LaunchAtLogin.isWanted
         loginStatus = LaunchAtLogin.status
         loginError = LaunchAtLogin.lastError
     }
 
-    /// Explains why the box is unticked when that isn't what the user asked for.
+    /// Explains why the login item isn't active when the box is ticked.
     @ViewBuilder
     private var launchAtLoginNote: some View {
         if !LaunchAtLogin.isAvailable {
             Text("Not available under `swift run`; use `make run`.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        } else if LaunchAtLogin.isWanted, loginStatus == .requiresApproval {
+        } else if loginWanted, loginStatus == .requiresApproval {
             Button("Allow in System Settings › Login Items") {
                 SMAppService.openSystemSettingsLoginItems()
             }
             .buttonStyle(.link)
             .font(.caption)
-        } else if LaunchAtLogin.isWanted, loginStatus != .enabled, let loginError {
+        } else if loginWanted, loginStatus != .enabled, let loginError {
             StatusMessage(message: "Couldn't enable: \(loginError)", tint: .orange)
         }
     }
