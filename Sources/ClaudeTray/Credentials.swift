@@ -34,7 +34,8 @@ enum Credentials {
     /// Keychain prompt is shown. Runs off the main thread.
     ///
     /// - Throws: `UsageAPIError.notLoggedIn` if the item is missing or has no
-    ///   Claude.ai OAuth entry, `UsageAPIError.keychainUnavailable` for other failures.
+    ///   Claude.ai OAuth entry, `UsageAPIError.unreadableCredentials` if it isn't
+    ///   the expected JSON, `UsageAPIError.keychainUnavailable` for other failures.
     static func load() async throws -> ClaudeCredentials {
         let task = Task.detached(priority: .utility) { () throws -> ClaudeCredentials in
             let data = try readKeychainItem()
@@ -79,14 +80,50 @@ enum Credentials {
         let claudeAiOauth: OAuth?
     }
 
-    nonisolated private static func decode(_ data: Data) throws -> ClaudeCredentials {
-        guard let payload = try? JSONDecoder().decode(KeychainPayload.self, from: data),
-              let oauth = payload.claudeAiOauth,
+    /// Parses `security -w` output. Internal for testing.
+    nonisolated static func decode(_ output: Data) throws -> ClaudeCredentials {
+        var data = output
+        while let last = data.last, last == UInt8(ascii: "\n") || last == UInt8(ascii: "\r") {
+            data.removeLast()
+        }
+        guard !data.isEmpty else { throw UsageAPIError.notLoggedIn }
+        // `security -w` prints the value as hex if it has any non-ASCII byte or newline
+        // (e.g. a non-ASCII MCP server name in the JSON).
+        if data.first != UInt8(ascii: "{"), let decoded = hexDecoded(data) {
+            data = decoded
+        }
+        guard let payload = try? JSONDecoder().decode(KeychainPayload.self, from: data) else {
+            throw UsageAPIError.unreadableCredentials
+        }
+        guard let oauth = payload.claudeAiOauth,
               let token = oauth.accessToken, !token.isEmpty
         else {
             throw UsageAPIError.notLoggedIn
         }
         let expiry = oauth.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000) }
         return ClaudeCredentials(accessToken: token, expiresAt: expiry)
+    }
+
+    /// nil unless `hex` is a non-empty, even-length run of hex digits.
+    nonisolated private static func hexDecoded(_ hex: Data) -> Data? {
+        guard !hex.isEmpty, hex.count % 2 == 0 else { return nil }
+        var result = Data(capacity: hex.count / 2)
+        var high: UInt8?
+        for char in hex {
+            let nibble: UInt8
+            switch char {
+            case UInt8(ascii: "0")...UInt8(ascii: "9"): nibble = char - UInt8(ascii: "0")
+            case UInt8(ascii: "a")...UInt8(ascii: "f"): nibble = char - UInt8(ascii: "a") + 10
+            case UInt8(ascii: "A")...UInt8(ascii: "F"): nibble = char - UInt8(ascii: "A") + 10
+            default: return nil
+            }
+            if let h = high {
+                result.append(h << 4 | nibble)
+                high = nil
+            } else {
+                high = nibble
+            }
+        }
+        return result
     }
 }

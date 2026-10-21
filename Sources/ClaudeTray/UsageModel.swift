@@ -174,7 +174,7 @@ final class UsageModel {
             rateLimitedUntil = until
             nextDueAt = until
             message = "Rate limited — retrying in \(Self.formatMinutes(delay))"
-        case .notLoggedIn, .keychainUnavailable, .tokenExpired:
+        case .notLoggedIn, .keychainUnavailable, .unreadableCredentials, .tokenExpired:
             // No usable token and no API call was made: re-check the Keychain sooner to recover quickly.
             nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
             message = error.userMessage

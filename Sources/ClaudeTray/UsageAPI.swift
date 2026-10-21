@@ -4,6 +4,7 @@ import Foundation
 enum UsageAPIError: Error, Sendable, Equatable {
     case notLoggedIn
     case keychainUnavailable
+    case unreadableCredentials                  // Keychain item isn't the expected JSON
     case tokenExpired
     case unauthorized(Int)                      // 401 / 403
     case rateLimited(retryAfter: TimeInterval?) // 429
@@ -16,6 +17,7 @@ enum UsageAPIError: Error, Sendable, Equatable {
         switch self {
         case .notLoggedIn: "Not logged in to Claude Code"
         case .keychainUnavailable: "Couldn't read Claude Code credentials"
+        case .unreadableCredentials: "Couldn't parse Claude Code credentials"
         case .tokenExpired, .unauthorized: "Token expired — open Claude Code to refresh"
         case .rateLimited: "Rate limited"
         case .http(let code): "Server error (\(code))"
