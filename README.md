@@ -4,6 +4,8 @@ A tiny native macOS menu bar app that shows your Claude usage limits at a glance
 The menu bar shows a progress bar for the current session (5-hour) window; click it
 for a panel with both the session and weekly limits and when each resets.
 
+<img src="docs/screenshot.png" alt="ClaudeTray menu bar item with its usage panel open" width="328">
+
 ## Requirements
 
 - macOS 14 (Sonoma) or later
