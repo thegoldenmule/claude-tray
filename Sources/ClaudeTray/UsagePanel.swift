@@ -186,6 +186,9 @@ private extension UsageLevel {
 @MainActor
 private func resetCaption(for resetsAt: Date?, now: Date) -> String {
     guard let resetsAt else { return "Reset time unknown" }
+    // The API's reset timestamps drift by a fraction of a second between fetches; round to
+    // the nearest minute so the caption doesn't flip between e.g. 3:29 PM and 3:30 PM.
+    let resetsAt = Date(timeIntervalSinceReferenceDate: (resetsAt.timeIntervalSinceReferenceDate / 60).rounded() * 60)
     let remaining = resetsAt.timeIntervalSince(now)
     let relative: String
     if remaining <= 0 {
