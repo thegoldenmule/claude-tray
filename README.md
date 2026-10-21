@@ -14,14 +14,17 @@ for a panel with both the session and weekly limits and when each resets.
 ## How it works
 
 - Reads Claude Code's OAuth access token from the login Keychain item
-  `Claude Code-credentials` by shelling out to `/usr/bin/security`. The first time,
-  macOS will ask whether to allow this; choose "Always Allow".
+  `Claude Code-credentials` by shelling out to `/usr/bin/security`. Claude Code
+  creates that item with the same tool, so normally no Keychain prompt appears; if
+  macOS does ask, choose "Always Allow".
 - Calls the undocumented `GET https://api.anthropic.com/api/oauth/usage` endpoint
   and displays the `five_hour` (session) and `seven_day` (weekly) utilization.
 - Never refreshes or writes the token. If it has expired, the app shows stale data
-  until Claude Code refreshes it (just use Claude Code as normal).
-- Polls every 5 minutes, backing off on HTTP 429. Opening the panel triggers a
-  refresh, throttled to once per minute.
+  until Claude Code refreshes it (just use Claude Code as normal); it re-checks the
+  Keychain every minute meanwhile, without calling the API.
+- Polls every 5 minutes and right after the Mac wakes. On HTTP 429 it backs off
+  exponentially (up to 30 minutes, or up to an hour if the server's `Retry-After` asks).
+  Opening the panel or clicking refresh fetches immediately, at most once per minute.
 
 ## Build and run
 
