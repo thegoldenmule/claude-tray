@@ -11,9 +11,12 @@ struct ClaudeCredentials: Sendable, CustomStringConvertible, CustomDebugStringCo
     /// nil when Claude Code didn't record an expiry.
     let expiresAt: Date?
 
+    /// Treat the token as expired slightly early so a request doesn't race the expiry.
+    static let expirySkew: TimeInterval = 60
+
     func isExpired(now: Date = Date()) -> Bool {
         guard let expiresAt else { return false }
-        return expiresAt <= now
+        return expiresAt <= now.addingTimeInterval(Self.expirySkew)
     }
 
     // Never let the token leak through string interpolation / logging.

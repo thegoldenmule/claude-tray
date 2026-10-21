@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Observation
 
@@ -59,9 +60,18 @@ final class UsageModel {
     @ObservationIgnored private var consecutiveRateLimits = 0
     @ObservationIgnored private var consecutiveKeychainFailures = 0
     @ObservationIgnored private var consecutiveNetworkFailures = 0
+    /// The last token the server rejected (hashed; the token itself is never kept).
+    @ObservationIgnored private var rejectedToken: RejectedToken?
     @ObservationIgnored private var started = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
     @ObservationIgnored private var activity: (any NSObjectProtocol)?
+
+    private struct RejectedToken {
+        let hash: SHA256.Digest
+        let statusCode: Int
+        /// Fallback: try the same token again after this, in case the rejection was transient.
+        let retryAt: Date
+    }
 
     init() {}
 
@@ -150,17 +160,25 @@ final class UsageModel {
         nextDueAt = now.addingTimeInterval(Self.baseInterval)
         if snapshot == nil { status = .loading }
 
+        var sentTokenHash: SHA256.Digest?
         do {
             // Read fresh every time: picks up tokens Claude Code has refreshed.
             let credentials = try await Credentials.load()
             consecutiveKeychainFailures = 0
             guard !credentials.isExpired() else { throw UsageAPIError.tokenExpired }
+            let tokenHash = SHA256.hash(data: Data(credentials.accessToken.utf8))
+            // Don't re-send a rejected token until Claude Code replaces it (or the fallback passes).
+            if let rejectedToken, rejectedToken.hash == tokenHash, Date() < rejectedToken.retryAt {
+                throw UsageAPIError.unauthorized(rejectedToken.statusCode)
+            }
+            sentTokenHash = tokenHash
             let result = try await UsageAPI.fetch(token: credentials.accessToken)
             snapshot = result
             status = .ok
             consecutiveRateLimits = 0
             consecutiveNetworkFailures = 0
             rateLimitedUntil = nil
+            rejectedToken = nil
             nextDueAt = Date().addingTimeInterval(Self.baseInterval)
         } catch is CancellationError {
             // E.g. system sleep cancelled the poll task mid-request. Not a failure: keep
@@ -168,6 +186,10 @@ final class UsageModel {
             status = previousStatus
             nextDueAt = Date().addingTimeInterval(Self.networkRetryInterval)
         } catch let error as UsageAPIError {
+            if case .unauthorized(let code) = error, let sentTokenHash {
+                rejectedToken = RejectedToken(hash: sentTokenHash, statusCode: code,
+                                              retryAt: Date().addingTimeInterval(Self.baseInterval))
+            }
             handle(error)
         } catch {
             handle(.network(error.localizedDescription))
@@ -192,8 +214,9 @@ final class UsageModel {
             let delay = min(Self.maxBackoff, Self.credentialRecheckInterval * pow(2, Double(consecutiveKeychainFailures - 1)))
             nextDueAt = now.addingTimeInterval(delay)
             message = error.userMessage
-        case .notLoggedIn, .unreadableCredentials, .tokenExpired:
-            // No usable token and no API call was made: re-check the Keychain sooner to recover quickly.
+        case .notLoggedIn, .unreadableCredentials, .tokenExpired, .unauthorized:
+            // No usable token: re-check the Keychain sooner to recover quickly. The API is only
+            // called again once the token changes (see rejectedToken).
             nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
             message = error.userMessage
         case .network:
@@ -202,7 +225,7 @@ final class UsageModel {
             let delay = min(Self.baseInterval, Self.networkRetryInterval * pow(2, Double(consecutiveNetworkFailures - 1)))
             nextDueAt = now.addingTimeInterval(delay)
             message = error.userMessage
-        case .unauthorized, .http, .decoding:
+        case .http, .decoding:
             nextDueAt = now.addingTimeInterval(Self.baseInterval)
             message = error.userMessage
         }
