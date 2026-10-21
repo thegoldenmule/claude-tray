@@ -2,14 +2,23 @@
 # Build, sign, notarize and publish a ClaudeTray release.
 #
 #   make release VERSION=1.2.3            # full release
-#   make release VERSION=1.2.3 DRY_RUN=1  # signed DMG only; nothing committed or published
+#   make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed zip only; nothing notarized,
+#                                         # committed or published
+#
+# Signing and notarization go through the Apple account signed into Xcode
+# (Xcode > Settings > Accounts): the app is wrapped in an .xcarchive and exported with
+# `xcodebuild -exportArchive -allowProvisioningUpdates` (method developer-id), which signs
+# it with a cloud-managed Developer ID certificate and uploads it to Apple's notary
+# service. No local Developer ID certificate, app-specific password or notarytool profile
+# is needed. The account needs the Account Holder or Admin role (with access to
+# cloud-managed Developer ID certificates) on the team.
 #
 # Environment:
-#   VERSION         required. X.Y.Z (a dry run also accepts X.Y.Z-suffix).
-#   DRY_RUN=1       build a signed DMG, skip version commit/tag, notarization, push, publish.
-#                   Falls back to an "Apple Development" identity if no Developer ID exists.
-#   DEVELOPER_ID    signing identity (name or SHA-1). Default: first "Developer ID Application".
-#   NOTARY_PROFILE  notarytool keychain profile. Default: claude-tray-notary.
+#   VERSION          required. X.Y.Z (a dry run also accepts X.Y.Z-suffix).
+#   DRY_RUN=1        sign with Developer ID and package, but skip the version commit/tag,
+#                    notarization, push and publish.
+#   TEAM_ID          Apple developer team. Default: QKMK66X2FU.
+#   NOTARY_TIMEOUT   seconds to wait for notarization. Default: 1800.
 #
 # Build number (CFBundleVersion): the number of commits on main including the release
 # commit (`git rev-list --count HEAD` + 1), bumped past the current value if that would
@@ -30,8 +39,9 @@ CO_AUTHOR="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 VERSION="${VERSION:-}"
 DRY_RUN="${DRY_RUN:-}"
-DEVELOPER_ID="${DEVELOPER_ID:-}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-claude-tray-notary}"
+TEAM_ID="${TEAM_ID:-QKMK66X2FU}"
+NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-1800}"
+NOTARY_POLL=30
 case "$DRY_RUN" in 1|true|yes) DRY_RUN=1 ;; *) DRY_RUN=0 ;; esac
 
 cd "$REPO_ROOT"
@@ -51,30 +61,6 @@ skip() { printf '    %s[DRY RUN] SKIPPED:%s %s\n' "$YELLOW" "$RESET" "$*"; }
 note() { printf '    %s[DRY RUN]%s %s\n' "$YELLOW" "$RESET" "$*"; }
 die()  { printf '\n%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 
-setup_instructions() {
-    cat >&2 <<EOF
-
-One-time setup for notarized releases:
-
-  1. Create a "Developer ID Application" certificate (requires the Account Holder role):
-     Xcode > Settings > Accounts > select your team > Manage Certificates > + >
-     "Developer ID Application". Check it with:
-         security find-identity -v -p codesigning
-
-  2. Create an app-specific password for your Apple ID at https://account.apple.com >
-     Sign-In and Security > App-Specific Passwords.
-
-  3. Store notarization credentials in the keychain (prompts for that password):
-         xcrun notarytool store-credentials $NOTARY_PROFILE \\
-             --apple-id <your Apple ID email> --team-id <TEAM_ID>
-     TEAM_ID is the 10-character ID in parentheses at the end of the identity name,
-     e.g. "Developer ID Application: Your Name (TEAM_ID)".
-
-Then re-run: make release VERSION=$VERSION
-To test the pipeline without any of this: make release VERSION=$VERSION DRY_RUN=1
-EOF
-}
-
 # ---------------------------------------------------------------- failure handling
 
 PREV_SHA=""      # HEAD before the release commit
@@ -82,21 +68,17 @@ RELEASE_SHA=""   # the release commit this run created
 TAG=""
 TAG_CREATED=0
 PUSHED=0
-MOUNT_POINT=""
 
 on_exit() {
     local rc=$?
-    if [[ -n "$MOUNT_POINT" ]]; then
-        hdiutil detach -quiet "$MOUNT_POINT" 2>/dev/null || true
-    fi
     [[ $rc -eq 0 ]] && return
 
     if [[ $PUSHED -eq 1 ]]; then
         cat >&2 <<EOF
 
-${RED}Release failed after $TAG was pushed.${RESET} The notarized DMG is in $DIST_DIR/.
+${RED}Release failed after $TAG was pushed.${RESET} The notarized zip is in $DIST_DIR/.
 Finish publishing by hand:
-    gh release create $TAG $DMG_PATH $SUM_PATH --verify-tag --title "$APP_NAME $VERSION" \\
+    gh release create $TAG $ZIP_PATH $SUM_PATH --verify-tag --title "$APP_NAME $VERSION" \\
         --generate-notes --notes-file $NOTES_PATH
 EOF
         return
@@ -125,7 +107,7 @@ trap 'exit 130' INT TERM
 # ---------------------------------------------------------------- preflight
 
 step "Preflight"
-[[ $DRY_RUN -eq 1 ]] && info "${YELLOW}DRY RUN${RESET}: builds a signed DMG; no commit, tag, notarization, push or release."
+[[ $DRY_RUN -eq 1 ]] && info "${YELLOW}DRY RUN${RESET}: builds a Developer ID-signed zip; no commit, tag, notarization, push or release."
 
 [[ -n "$VERSION" ]] || die "VERSION is required, e.g.: make release VERSION=1.2.3"
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -135,10 +117,11 @@ else
     [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
         || die "VERSION '$VERSION' must be MAJOR.MINOR.PATCH, e.g. 1.2.3 (CFBundleShortVersionString allows only digits and dots)"
 fi
+[[ "$NOTARY_TIMEOUT" =~ ^[0-9]+$ ]] || die "NOTARY_TIMEOUT must be a number of seconds"
 TAG="v$VERSION"
 ok "version $VERSION (tag $TAG)"
 
-for tool in swift codesign hdiutil xcrun git gh shasum lipo spctl "$PLISTBUDDY"; do
+for tool in swift codesign xcodebuild xcrun ditto git gh shasum lipo spctl "$PLISTBUDDY"; do
     command -v "$tool" >/dev/null || die "required tool not found: $tool"
 done
 
@@ -176,57 +159,13 @@ else
     ok "tag $TAG is unused (local and origin)"
 fi
 
-IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-SIGN_IDENTITY=""
-SIGN_LABEL=""
-if [[ -n "$DEVELOPER_ID" ]]; then
-    line="$(grep -F -- "$DEVELOPER_ID" <<<"$IDENTITIES" | head -n1 || true)"
-    if [[ -z "$line" ]]; then
-        check "DEVELOPER_ID '$DEVELOPER_ID' is not a valid codesigning identity in your keychain"
-    elif [[ "$line" != *'"Developer ID Application'* && $DRY_RUN -eq 0 ]]; then
-        die "DEVELOPER_ID '$DEVELOPER_ID' is not a \"Developer ID Application\" identity; notarization requires one"
-    fi
-    if [[ -n "$line" ]]; then
-        SIGN_IDENTITY="$(awk '{print $2}' <<<"$line")"
-        SIGN_LABEL="$(sed -E 's/^[^"]*"(.*)"$/\1/' <<<"$line")"
-    fi
+# Signing and notarization need an Apple account in Xcode (fatal even for a dry run,
+# which still signs with Developer ID). Only account identifiers are read, never emails.
+XCODE_ACCOUNTS="$(defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null || true)"
+if grep -q identifier <<<"$XCODE_ACCOUNTS"; then
+    ok "Xcode has an Apple account signed in (team $TEAM_ID)"
 else
-    line="$(grep -F '"Developer ID Application' <<<"$IDENTITIES" | head -n1 || true)"
-    if [[ -n "$line" ]]; then
-        SIGN_IDENTITY="$(awk '{print $2}' <<<"$line")"
-        SIGN_LABEL="$(sed -E 's/^[^"]*"(.*)"$/\1/' <<<"$line")"
-    elif [[ $DRY_RUN -eq 0 ]]; then
-        printf '\n%serror:%s no "Developer ID Application" signing identity found in your keychain.\n' "$RED" "$RESET" >&2
-        setup_instructions
-        exit 1
-    fi
-fi
-if [[ -z "$SIGN_IDENTITY" ]]; then   # dry run only
-    warn "no Developer ID Application identity (would stop a real release); falling back for the dry run"
-    line="$(grep -F '"Apple Development' <<<"$IDENTITIES" | head -n1 || true)"
-    if [[ -n "$line" ]]; then
-        SIGN_IDENTITY="$(awk '{print $2}' <<<"$line")"
-        SIGN_LABEL="$(sed -E 's/^[^"]*"(.*)"$/\1/' <<<"$line")"
-    else
-        SIGN_IDENTITY="-"
-        SIGN_LABEL="ad-hoc"
-    fi
-fi
-ok "signing identity: $SIGN_LABEL ($SIGN_IDENTITY)"
-
-notary_out="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1 >/dev/null)" && notary_rc=0 || notary_rc=$?
-if [[ $notary_rc -eq 0 ]]; then
-    ok "notarytool profile '$NOTARY_PROFILE'"
-elif grep -q "No Keychain password item found" <<<"$notary_out"; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-        warn "notarytool keychain profile '$NOTARY_PROFILE' not found (would stop a real release)"
-    else
-        printf '\n%serror:%s notarytool keychain profile "%s" not found.\n' "$RED" "$RESET" "$NOTARY_PROFILE" >&2
-        setup_instructions
-        exit 1
-    fi
-else
-    check "notarytool could not use profile '$NOTARY_PROFILE': $(head -n3 <<<"$notary_out")"
+    die "no Apple account in Xcode. Open Xcode > Settings > Accounts and sign in, then re-run."
 fi
 
 if gh auth status >/dev/null 2>&1; then
@@ -263,79 +202,175 @@ else
     ok "committed ${RELEASE_SHA:0:7} \"Release $TAG\" and tagged $TAG (local only until notarized)"
 fi
 
-# ---------------------------------------------------------------- build + bundle + sign
+# ---------------------------------------------------------------- build + archive
 
-STAGE_DIR="$DIST_DIR/$APP_NAME-$VERSION"   # becomes the DMG's root
-APP_PATH="$STAGE_DIR/$APP_NAME.app"
-DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
-SUM_PATH="$DMG_PATH.sha256"
+WORK_DIR="$DIST_DIR/$APP_NAME-$VERSION"
+ARCHIVE_PATH="$WORK_DIR/$APP_NAME.xcarchive"
+ARCHIVED_APP="$ARCHIVE_PATH/Products/Applications/$APP_NAME.app"
+EXPORT_DIR="$WORK_DIR/export"         # Developer ID-signed app (dry run)
+NOTARIZED_DIR="$WORK_DIR/notarized"   # notarized, stapled app (real release)
+ZIP_PATH="$DIST_DIR/$APP_NAME-$VERSION.zip"
+SUM_PATH="$ZIP_PATH.sha256"
 NOTES_PATH="$DIST_DIR/release-notes-$VERSION.md"
-rm -rf "$STAGE_DIR" "$DMG_PATH" "$SUM_PATH"
+LOG_PATH="$WORK_DIR/xcodebuild.log"
+rm -rf "$WORK_DIR" "$ZIP_PATH" "$SUM_PATH"
+mkdir -p "$WORK_DIR"
 
-TIMESTAMP_FLAG=--timestamp
-[[ "$SIGN_IDENTITY" == "-" ]] && TIMESTAMP_FLAG=--timestamp=none
-
-step "Build universal app bundle and sign (hardened runtime)"
+step "Build universal app bundle"
+# Signed ad-hoc with the hardened runtime; xcodebuild re-signs it with Developer ID on export.
 make --no-print-directory app \
-    BUILD_DIR="$STAGE_DIR" \
+    BUILD_DIR="$ARCHIVE_PATH/Products/Applications" \
     ARCHS="arm64 x86_64" \
     INFO_PLIST="$BUNDLE_PLIST" \
-    SIGN_IDENTITY="$SIGN_IDENTITY" \
-    CODESIGN_TIMESTAMP="$TIMESTAMP_FLAG"
+    SIGN_IDENTITY=-
 
-ARCHS_FOUND="$(lipo -archs "$APP_PATH/Contents/MacOS/$APP_NAME")"
+ARCHS_FOUND="$(lipo -archs "$ARCHIVED_APP/Contents/MacOS/$APP_NAME")"
 [[ "$ARCHS_FOUND" == *arm64* && "$ARCHS_FOUND" == *x86_64* ]] \
     || die "expected a universal binary, got architectures: $ARCHS_FOUND"
 ok "architectures: $ARCHS_FOUND"
 
-BUNDLE_VERSION="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$APP_PATH/Contents/Info.plist")"
+BUNDLE_ID="$("$PLISTBUDDY" -c "Print :CFBundleIdentifier" "$ARCHIVED_APP/Contents/Info.plist")"
+BUNDLE_VERSION="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$ARCHIVED_APP/Contents/Info.plist")"
+BUNDLE_BUILD="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$ARCHIVED_APP/Contents/Info.plist")"
 [[ "$BUNDLE_VERSION" == "$VERSION" ]] || die "bundle version is $BUNDLE_VERSION, expected $VERSION"
-ok "bundle version $BUNDLE_VERSION ($("$PLISTBUDDY" -c "Print :CFBundleVersion" "$APP_PATH/Contents/Info.plist"))"
+ok "bundle $BUNDLE_ID $BUNDLE_VERSION ($BUNDLE_BUILD)"
 
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-codesign -dvv "$APP_PATH" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp|CodeDirectory)' | sed 's/^/    /' || true
+step "Wrap in $ARCHIVE_PATH"
+cat >"$ARCHIVE_PATH/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ApplicationProperties</key>
+	<dict>
+		<key>ApplicationPath</key>
+		<string>Applications/$APP_NAME.app</string>
+		<key>Architectures</key>
+		<array>
+			<string>arm64</string>
+			<string>x86_64</string>
+		</array>
+		<key>CFBundleIdentifier</key>
+		<string>$BUNDLE_ID</string>
+		<key>CFBundleShortVersionString</key>
+		<string>$BUNDLE_VERSION</string>
+		<key>CFBundleVersion</key>
+		<string>$BUNDLE_BUILD</string>
+		<key>SigningIdentity</key>
+		<string>-</string>
+		<key>Team</key>
+		<string>$TEAM_ID</string>
+	</dict>
+	<key>ArchiveVersion</key>
+	<integer>2</integer>
+	<key>CreationDate</key>
+	<date>$(date -u +%Y-%m-%dT%H:%M:%SZ)</date>
+	<key>Name</key>
+	<string>$APP_NAME</string>
+	<key>SchemeName</key>
+	<string>$APP_NAME</string>
+</dict>
+</plist>
+EOF
+plutil -lint -s "$ARCHIVE_PATH/Info.plist"
+ok "archive ready"
 
-# ---------------------------------------------------------------- DMG
+# ---------------------------------------------------------------- sign + notarize
 
-step "Create and sign $DMG_PATH"
-ln -s /Applications "$STAGE_DIR/Applications"
-hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE_DIR" -fs HFS+ -format UDZO -ov "$DMG_PATH"
-codesign --force $TIMESTAMP_FLAG -s "$SIGN_IDENTITY" "$DMG_PATH"
-codesign --verify --strict --verbose=2 "$DMG_PATH"
-ok "signed $DMG_PATH"
-
-# ---------------------------------------------------------------- notarize + staple
-
-step "Notarize and staple"
-if [[ $DRY_RUN -eq 1 ]]; then
-    skip "xcrun notarytool submit $DMG_PATH --keychain-profile $NOTARY_PROFILE --wait"
-    skip "xcrun stapler staple $DMG_PATH"
-else
-    SUBMIT_JSON="$DIST_DIR/notarize-$VERSION.json"
-    info "submitting to Apple (usually a few minutes)..."
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" \
-        --wait --output-format json >"$SUBMIT_JSON" || true
-    SUBMISSION_ID="$(plutil -extract id raw -o - "$SUBMIT_JSON" 2>/dev/null || true)"
-    STATUS="$(plutil -extract status raw -o - "$SUBMIT_JSON" 2>/dev/null || true)"
-    info "submission ${SUBMISSION_ID:-?}: ${STATUS:-unknown}"
-    if [[ "$STATUS" != Accepted ]]; then
-        cat "$SUBMIT_JSON" >&2 || true
-        if [[ -n "$SUBMISSION_ID" ]]; then
-            printf '\nNotarization log:\n' >&2
-            xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
-        fi
-        die "notarization failed (status: ${STATUS:-unknown})"
+# Runs xcodebuild, appending its output to the log; prints the last lines on failure.
+xcb() {
+    printf '\n$ xcodebuild %s\n' "$*" >>"$LOG_PATH"
+    if xcodebuild "$@" >>"$LOG_PATH" 2>&1; then
+        return 0
     fi
+    tail -n 20 "$LOG_PATH" | sed 's/^/    /' >&2
+    return 1
+}
+
+export_options() {   # $1 = export|upload
+    local plist="$WORK_DIR/ExportOptions-$1.plist"
+    cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>developer-id</string>
+	<key>destination</key>
+	<string>$1</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>teamID</key>
+	<string>$TEAM_ID</string>
+</dict>
+</plist>
+EOF
+    printf '%s' "$plist"
+}
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    step "Sign with Developer ID (cloud-managed, via Xcode)"
+    xcb -exportArchive -archivePath "$ARCHIVE_PATH" -exportPath "$EXPORT_DIR" \
+        -exportOptionsPlist "$(export_options export)" -allowProvisioningUpdates \
+        || die "Developer ID export failed (log: $LOG_PATH). If it mentions your account or role, check Xcode > Settings > Accounts."
+    APP_PATH="$EXPORT_DIR/$APP_NAME.app"
+    skip "upload to Apple's notary service and stapling"
+else
+    step "Sign with Developer ID (cloud-managed, via Xcode) and submit for notarization"
+    xcb -exportArchive -archivePath "$ARCHIVE_PATH" -exportPath "$WORK_DIR/upload" \
+        -exportOptionsPlist "$(export_options upload)" -allowProvisioningUpdates \
+        || die "Developer ID signing/upload failed (log: $LOG_PATH). If it mentions your account or role, check Xcode > Settings > Accounts."
+    ok "uploaded to Apple's notary service"
+
+    info "waiting for notarization (usually a few minutes; timeout ${NOTARY_TIMEOUT}s)..."
+    deadline=$(( SECONDS + NOTARY_TIMEOUT ))
+    unexpected=0
+    while :; do
+        if out="$(xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE_PATH" -exportPath "$NOTARIZED_DIR" 2>&1)"; then
+            printf '%s\n' "$out" >>"$LOG_PATH"
+            break
+        fi
+        if grep -q "is processing and not ready" <<<"$out"; then
+            unexpected=0
+        else
+            # Not "still processing": a rejection or a transient error. Allow a couple of
+            # retries for the latter before giving up.
+            unexpected=$(( unexpected + 1 ))
+            printf '%s\n' "$out" >>"$LOG_PATH"
+            if (( unexpected >= 3 )); then
+                grep -Ev '^\s*$' <<<"$out" | tail -n 10 | sed 's/^/    /' >&2
+                die "notarization failed (log: $LOG_PATH; Xcode's distribution logs are in \$TMPDIR/${APP_NAME}_*.xcdistributionlogs)"
+            fi
+        fi
+        (( SECONDS < deadline )) || die "notarization did not finish within ${NOTARY_TIMEOUT}s. Once it does, run: xcodebuild -exportNotarizedApp -archivePath $ARCHIVE_PATH -exportPath $NOTARIZED_DIR"
+        sleep "$NOTARY_POLL"
+    done
+    APP_PATH="$NOTARIZED_DIR/$APP_NAME.app"
+    [[ -d "$APP_PATH" ]] || die "xcodebuild reported success but $APP_PATH is missing"
     ok "notarization accepted"
-    xcrun stapler staple "$DMG_PATH"
-    xcrun stapler validate "$DMG_PATH"
-    ok "ticket stapled to $DMG_PATH"
+    xcrun stapler validate -q "$APP_PATH" || die "no notarization ticket stapled to $APP_PATH"
+    ok "ticket stapled"
 fi
 
-# ---------------------------------------------------------------- verify
+codesign --verify --deep --strict "$APP_PATH"
+SIGNATURE="$(codesign -dvv "$APP_PATH" 2>&1)"
+grep -E '^(Authority|TeamIdentifier|Timestamp)' <<<"$SIGNATURE" | sed 's/^/    /' || true
+grep -q "^Authority=Developer ID Application: .*($TEAM_ID)$" <<<"$SIGNATURE" \
+    || die "$APP_PATH is not signed with a Developer ID Application certificate for team $TEAM_ID"
+ok "signed with Developer ID ($TEAM_ID)"
 
-step "Verify DMG"
-# Gatekeeper assessment. Expected to be rejected in a dry run (not notarized).
+# ---------------------------------------------------------------- package + verify
+
+# A zip of the stapled app rather than a DMG: the cloud-managed certificate can't sign a
+# disk image locally, and Gatekeeper rejects an unsigned, unnotarized DMG ("no usable
+# signature"). A zip isn't assessed itself; the app inside carries its own ticket.
+step "Package $ZIP_PATH"
+ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+ok "created $ZIP_PATH ($(du -h "$ZIP_PATH" | awk '{print $1}'))"
+
+step "Verify as a download"
+# Mark a copy as downloaded by Safari, extract it, and assess the result like Gatekeeper
+# would on first launch. Expected to be rejected in a dry run (not notarized).
 gatekeeper() {
     if "$@" 2>&1 | sed 's/^/    /'; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
         return 0
@@ -345,23 +380,29 @@ gatekeeper() {
         die "Gatekeeper rejected: $*"
     fi
 }
-gatekeeper spctl -a -t open --context context:primary-signature -v "$DMG_PATH"
+VERIFY_DIR="$WORK_DIR/verify"
+rm -rf "$VERIFY_DIR" && mkdir -p "$VERIFY_DIR/extracted"
+cp "$ZIP_PATH" "$VERIFY_DIR/"
+xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;" "$VERIFY_DIR/$(basename "$ZIP_PATH")"
+ditto -x -k "$VERIFY_DIR/$(basename "$ZIP_PATH")" "$VERIFY_DIR/extracted"
+EXTRACTED_APP="$VERIFY_DIR/extracted/$APP_NAME.app"
+[[ -d "$EXTRACTED_APP" ]] || die "zip does not contain $APP_NAME.app at its root"
+xattr -p com.apple.quarantine "$EXTRACTED_APP" >/dev/null 2>&1 \
+    || xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;" "$EXTRACTED_APP"
+codesign --verify --deep --strict "$EXTRACTED_APP"
+ok "extracted app signature verifies"
+gatekeeper spctl -a -vv -t exec "$EXTRACTED_APP"
+if [[ $DRY_RUN -eq 0 ]]; then
+    xcrun stapler validate -q "$EXTRACTED_APP" || die "extracted app has no stapled ticket"
+    ok "extracted app has a stapled ticket"
+    if command -v syspolicy_check >/dev/null; then
+        syspolicy_check distribution "$EXTRACTED_APP" 2>&1 | sed 's/^/    /' \
+            || die "syspolicy_check distribution failed"
+    fi
+fi
+rm -rf "$VERIFY_DIR"
 
-TMP_ROOT="${TMPDIR:-/tmp}"
-MOUNT_POINT="$(mktemp -d "${TMP_ROOT%/}/claudetray-dmg.XXXXXX")"
-hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$DMG_PATH"
-[[ -d "$MOUNT_POINT/$APP_NAME.app" ]] || die "DMG does not contain $APP_NAME.app"
-[[ -L "$MOUNT_POINT/Applications" && "$(readlink "$MOUNT_POINT/Applications")" == /Applications ]] \
-    || die "DMG does not contain an Applications symlink"
-ok "DMG contains $APP_NAME.app and Applications -> /Applications"
-codesign --verify --deep --strict "$MOUNT_POINT/$APP_NAME.app"
-ok "mounted app signature verifies"
-gatekeeper spctl -a -vv "$MOUNT_POINT/$APP_NAME.app"
-hdiutil detach -quiet "$MOUNT_POINT"
-rmdir "$MOUNT_POINT" 2>/dev/null || true
-MOUNT_POINT=""
-
-(cd "$DIST_DIR" && shasum -a 256 "$(basename "$DMG_PATH")" >"$(basename "$SUM_PATH")")
+(cd "$DIST_DIR" && shasum -a 256 "$(basename "$ZIP_PATH")" >"$(basename "$SUM_PATH")")
 ok "sha256 $(awk '{print $1}' "$SUM_PATH")"
 
 # ---------------------------------------------------------------- publish
@@ -369,26 +410,27 @@ ok "sha256 $(awk '{print $1}' "$SUM_PATH")"
 cat >"$NOTES_PATH" <<EOF
 ## Install
 
-1. Download \`$APP_NAME-$VERSION.dmg\` below.
-2. Open it and drag **$APP_NAME** to **Applications**.
+1. Download \`$APP_NAME-$VERSION.zip\` below and unzip it (Safari does this automatically).
+2. Move **$APP_NAME.app** to your **Applications** folder.
 3. Open $APP_NAME from Applications. It appears in the menu bar.
 
 Requires macOS 14 or later and [Claude Code](https://docs.claude.com/en/docs/claude-code)
-logged in with a Claude Pro or Max subscription. Verify the download with
-\`shasum -a 256 -c $APP_NAME-$VERSION.dmg.sha256\`.
+logged in with a Claude Pro or Max subscription. The app is signed with Developer ID and
+notarized by Apple. Verify the download with
+\`shasum -a 256 -c $APP_NAME-$VERSION.zip.sha256\`.
 EOF
 
 step "Publish"
 if [[ $DRY_RUN -eq 1 ]]; then
     skip "git push --atomic origin main $TAG"
-    skip "gh release create $TAG $DMG_PATH $SUM_PATH --title \"$APP_NAME $VERSION\" --generate-notes (notes: $NOTES_PATH)"
-    printf '\n%sDry run complete.%s Signed DMG: %s\n' "$GREEN" "$RESET" "$DMG_PATH"
+    skip "gh release create $TAG $ZIP_PATH $SUM_PATH --title \"$APP_NAME $VERSION\" --generate-notes (notes: $NOTES_PATH)"
+    printf '\n%sDry run complete.%s Developer ID-signed (not notarized) zip: %s\n' "$GREEN" "$RESET" "$ZIP_PATH"
     exit 0
 fi
 
 git push --atomic origin main "$TAG"
 PUSHED=1
 ok "pushed main and $TAG"
-gh release create "$TAG" "$DMG_PATH" "$SUM_PATH" --verify-tag \
+gh release create "$TAG" "$ZIP_PATH" "$SUM_PATH" --verify-tag \
     --title "$APP_NAME $VERSION" --generate-notes --notes-file "$NOTES_PATH"
 printf '\n%sReleased %s%s: %s\n' "$GREEN" "$TAG" "$RESET" "$(gh release view "$TAG" --json url -q .url)"

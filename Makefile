@@ -54,8 +54,7 @@ clean:
 dev:
 	swift run
 
-# Notarized universal DMG -> GitHub Release. See "Releasing" in README.md.
-#   make release VERSION=1.2.3 [DRY_RUN=1] [DEVELOPER_ID=...] [NOTARY_PROFILE=...]
+# Notarized universal app (zip) -> GitHub Release. See "Releasing" in README.md.
+#   make release VERSION=1.2.3 [DRY_RUN=1] [TEAM_ID=...]
 release:
-	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" DEVELOPER_ID="$(DEVELOPER_ID)" \
-	NOTARY_PROFILE="$(NOTARY_PROFILE)" scripts/release.sh
+	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" TEAM_ID="$(TEAM_ID)" scripts/release.sh

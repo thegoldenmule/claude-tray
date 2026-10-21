@@ -8,10 +8,11 @@ for a panel with both the session and weekly limits and when each resets.
 
 ## Install
 
-Download the latest `.dmg` from the
-[Releases page](https://github.com/thegoldenmule/claude-tray/releases/latest), open it,
-drag ClaudeTray to Applications, and open it from there. Requires macOS 14 or later and
-Claude Code logged in with a Pro or Max subscription.
+Download the latest `ClaudeTray-X.Y.Z.zip` from the
+[Releases page](https://github.com/thegoldenmule/claude-tray/releases/latest), unzip it
+(Safari does this automatically), move ClaudeTray.app to Applications, and open it from
+there. The app is signed with Developer ID and notarized by Apple. Requires macOS 14 or
+later and Claude Code logged in with a Pro or Max subscription.
 
 ## Requirements
 
@@ -60,35 +61,26 @@ make clean
 ## Releasing
 
 ```sh
-make release VERSION=1.2.3            # notarized universal DMG -> GitHub release
-make release VERSION=1.2.3 DRY_RUN=1  # signed DMG in dist/ only; nothing committed or published
+make release VERSION=1.2.3            # notarized universal app (zip) -> GitHub release
+make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed zip in dist/ only; nothing notarized or published
 ```
+
+Releases are signed and notarized with the Apple account signed into Xcode
+(Xcode › Settings › Accounts); there are no certificates, passwords or notary profiles to
+set up. The account needs the Account Holder or Admin role on the team, with access to
+cloud-managed Developer ID certificates.
 
 `make release` (see `scripts/release.sh`) checks that main is clean and in sync with
 origin, sets `CFBundleShortVersionString` to the version and `CFBundleVersion` to the
-commit count, commits and tags `vX.Y.Z` locally, builds a universal (arm64 + x86_64)
-app signed with your Developer ID, packages and signs `dist/ClaudeTray-X.Y.Z.dmg`,
-notarizes and staples it, and only then pushes the commit and tag and creates the
-GitHub release with the DMG and its SHA-256. If anything fails before the push, it
-removes the local commit and tag. Override the identity with `DEVELOPER_ID="..."` and
-the notary profile with `NOTARY_PROFILE=...`.
-
-One-time setup:
-
-1. Create a Developer ID Application certificate (requires the Account Holder role):
-   Xcode › Settings › Accounts › select the team › Manage Certificates › + ›
-   "Developer ID Application".
-2. Create an app-specific password at <https://account.apple.com> › Sign-In and
-   Security › App-Specific Passwords.
-3. Store notarization credentials (prompts for the app-specific password):
-
-   ```sh
-   xcrun notarytool store-credentials claude-tray-notary \
-       --apple-id you@example.com --team-id TEAM_ID
-   ```
-
-   `TEAM_ID` is the ID in parentheses at the end of your identity name, e.g.
-   `QKMK66X2FU` in "Developer ID Application: Your Name (QKMK66X2FU)".
+commit count, commits and tags `vX.Y.Z` locally, and builds a universal (arm64 + x86_64)
+app. It wraps the app in an `.xcarchive` and exports it with `xcodebuild -exportArchive
+-allowProvisioningUpdates` (method `developer-id`), which signs it with a cloud-managed
+Developer ID certificate and uploads it to Apple's notary service, then waits for
+`xcodebuild -exportNotarizedApp` to return the notarized, stapled app. It zips that as
+`dist/ClaudeTray-X.Y.Z.zip`, checks the zip passes Gatekeeper as a quarantined download,
+and only then pushes the commit and tag and creates the GitHub release with the zip and
+its SHA-256. If anything fails before the push, it removes the local commit and tag.
+Override the team with `TEAM_ID=...`.
 
 ## Launch at login
 
