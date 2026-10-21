@@ -5,6 +5,12 @@ INSTALL_DIR   := $(HOME)/Applications
 INSTALLED_APP := $(INSTALL_DIR)/$(APP_NAME).app
 INFO_PLIST    := Resources/Info.plist
 
+# Overridable by scripts/release.sh: ARCHS="arm64 x86_64" for a universal binary,
+# CODESIGN_TIMESTAMP=--timestamp for a secure timestamp (needed for notarization).
+ARCHS              :=
+CODESIGN_TIMESTAMP := --timestamp=none
+SWIFT_BUILD        := swift build -c release $(foreach a,$(ARCHS),--arch $(a))
+
 # First "Apple Development" identity (by SHA-1, so duplicate names aren't ambiguous);
 # falls back to ad-hoc signing ("-"). Override: make app SIGN_IDENTITY="Developer ID Application: ..."
 ifeq ($(origin SIGN_IDENTITY),undefined)
@@ -14,18 +20,18 @@ ifeq ($(strip $(SIGN_IDENTITY)),)
 override SIGN_IDENTITY := -
 endif
 
-.PHONY: build app run install clean dev
+.PHONY: build app run install clean dev release
 
 build:
-	swift build -c release
+	$(SWIFT_BUILD)
 
 app: build
-	@BIN_DIR="$$(swift build -c release --show-bin-path)"; \
+	@BIN_DIR="$$($(SWIFT_BUILD) --show-bin-path)"; \
 	rm -rf "$(APP_BUNDLE)"; \
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS"; \
 	cp "$$BIN_DIR/$(APP_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"; \
 	cp "$(INFO_PLIST)" "$(APP_BUNDLE)/Contents/Info.plist"
-	codesign --force --options runtime --timestamp=none -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
+	codesign --force --options runtime $(CODESIGN_TIMESTAMP) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE) (signed with: $(SIGN_IDENTITY))"
 
 # The installed copy is the only one ever launched, so "Launch at login" always points at it.
@@ -47,3 +53,9 @@ clean:
 
 dev:
 	swift run
+
+# Notarized universal DMG -> GitHub Release. See "Releasing" in README.md.
+#   make release VERSION=1.2.3 [DRY_RUN=1] [DEVELOPER_ID=...] [NOTARY_PROFILE=...]
+release:
+	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" DEVELOPER_ID="$(DEVELOPER_ID)" \
+	NOTARY_PROFILE="$(NOTARY_PROFILE)" scripts/release.sh
