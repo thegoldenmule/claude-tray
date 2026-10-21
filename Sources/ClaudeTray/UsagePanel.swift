@@ -83,7 +83,7 @@ struct UsagePanel: View {
     }
 
     private var updatedText: String {
-        guard let fetchedAt = model.snapshot?.fetchedAt else { return "Updated Never" }
+        guard let fetchedAt = model.snapshot?.fetchedAt else { return "Not updated yet" }
         let date: Date.FormatStyle.DateStyle = Calendar.current.isDateInToday(fetchedAt) ? .omitted : .abbreviated
         return "Updated \(fetchedAt.formatted(date: date, time: .shortened))"
     }
