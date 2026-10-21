@@ -4,7 +4,8 @@ import ServiceManagement
 
 struct UsagePanel: View {
     private let model: UsageModel
-    @State private var launchAtLogin = false
+    @State private var loginStatus: SMAppService.Status = .notRegistered
+    @State private var loginError: String?
 
     init(model: UsageModel) {
         self.model = model
@@ -42,8 +43,13 @@ struct UsagePanel: View {
 
             Divider()
 
-            Toggle("Launch at login", isOn: launchAtLoginBinding)
-                .toggleStyle(.checkbox)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Launch at login", isOn: launchAtLoginBinding)
+                    .toggleStyle(.checkbox)
+                    .disabled(!LaunchAtLogin.isAvailable)
+                    .help(LaunchAtLogin.isAvailable ? "" : "Only available when running the app bundle")
+                launchAtLoginNote
+            }
 
             Button("Quit ClaudeTray") {
                 NSApp.terminate(nil)
@@ -54,7 +60,7 @@ struct UsagePanel: View {
         .frame(width: 280, alignment: .leading)
         .onAppear {
             // Read the live registration state every time; the user can change it in System Settings.
-            launchAtLogin = SMAppService.mainApp.status == .enabled
+            syncLaunchAtLogin()
             Task { await model.refresh(userInitiated: true) }
         }
     }
@@ -92,26 +98,36 @@ struct UsagePanel: View {
 
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
-            get: { launchAtLogin },
-            set: { newValue in setLaunchAtLogin(newValue) }
+            get: { loginStatus == .enabled },
+            set: { newValue in
+                LaunchAtLogin.setWanted(newValue)
+                syncLaunchAtLogin()
+            }
         )
     }
 
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        let service = SMAppService.mainApp
-        do {
-            if enabled {
-                try service.register()
-            } else {
-                try service.unregister()
+    private func syncLaunchAtLogin() {
+        guard LaunchAtLogin.isAvailable else { return }
+        loginStatus = LaunchAtLogin.status
+        loginError = LaunchAtLogin.lastError
+    }
+
+    /// Explains why the box is unticked when that isn't what the user asked for.
+    @ViewBuilder
+    private var launchAtLoginNote: some View {
+        if !LaunchAtLogin.isAvailable {
+            Text("Not available under `swift run`; use `make run`.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if LaunchAtLogin.isWanted, loginStatus == .requiresApproval {
+            Button("Allow in System Settings › Login Items") {
+                SMAppService.openSystemSettingsLoginItems()
             }
-        } catch {
-            // Fall through: reflect whatever the system actually has.
+            .buttonStyle(.link)
+            .font(.caption)
+        } else if LaunchAtLogin.isWanted, loginStatus != .enabled, let loginError {
+            StatusMessage(message: "Couldn't enable: \(loginError)", tint: .orange)
         }
-        if enabled, service.status == .requiresApproval {
-            SMAppService.openSystemSettingsLoginItems()
-        }
-        launchAtLogin = service.status == .enabled
     }
 }
 
