@@ -29,21 +29,26 @@ for a panel with both the session and weekly limits and when each resets.
 ## Build and run
 
 ```sh
+make run       # build, install to ~/Applications/ClaudeTray.app, quit any running copy, launch it
+make install   # same, without launching
+make app       # release build -> build/ClaudeTray.app, codesigned (staging only)
 make dev       # swift run, no app bundle (quick iteration)
-make app       # release build -> build/ClaudeTray.app, codesigned
-make run       # build the app, quit any running copy, and launch it
-make install   # build and copy to ~/Applications/ClaudeTray.app
 make clean
 ```
 
-`make app` signs with your first "Apple Development" identity if you have one,
-otherwise ad-hoc. Override with `make app SIGN_IDENTITY="..."`.
+`make run` installs to `~/Applications` and launches that copy; the bundle in
+`build/` is moved there, never launched. `make app` signs with your first
+"Apple Development" identity if you have one, otherwise ad-hoc. Override with
+`make app SIGN_IDENTITY="..."`.
 
 ## Launch at login
 
-Run `make install`, open `~/Applications/ClaudeTray.app`, and enable
-"Launch at login" in the panel. This registers the app with `SMAppService`, so it
-should be enabled from the installed copy rather than `build/`.
+Tick "Launch at login" in the panel once and it stays correct across rebuilds.
+The choice is saved, and each launch re-registers the login item (via
+`SMAppService`) if it isn't already pointing at the running copy, so
+reinstalling, `make clean`, or moving the app doesn't silently break it. If macOS
+needs approval, the panel links to System Settings › Login Items. The toggle is
+disabled under `make dev`, since a bare executable can't be a login item.
 
 ## Caveats
 
