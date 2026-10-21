@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct ClaudeTrayApp: App {
     @State private var model: UsageModel
+    @State private var clock = MinuteClock()
 
     init() {
         // Start polling at launch, not on first click: the panel's onAppear only
@@ -24,7 +25,7 @@ struct ClaudeTrayApp: App {
         } label: {
             // Only Image/Text survive in a MenuBarExtra label, so the bar is
             // pre-rendered into an NSImage.
-            Image(nsImage: StatusBarRenderer.image(percent: model.snapshot?.session?.percent,
+            Image(nsImage: StatusBarRenderer.image(percent: model.snapshot?.session?.displayPercent(at: clock.now),
                                                    stale: isStale))
         }
         .menuBarExtraStyle(.window)
@@ -34,6 +35,20 @@ struct ClaudeTrayApp: App {
         switch model.status {
         case .stale, .error: true
         case .idle, .loading, .ok: false
+        }
+    }
+}
+
+/// Ticks once a minute so the label re-renders when a window's reset time passes,
+/// which changes nothing in the model. (A TimelineView in a MenuBarExtra label is
+/// only evaluated once.)
+@MainActor @Observable
+private final class MinuteClock {
+    private(set) var now = Date()
+
+    init() {
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.now = Date() }
         }
     }
 }

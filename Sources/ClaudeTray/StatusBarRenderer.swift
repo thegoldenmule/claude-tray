@@ -18,6 +18,19 @@ enum UsageLevel: Sendable, Equatable {
     }
 }
 
+extension UsageWindow {
+    /// True once `resetsAt` has passed: the usage counted here no longer applies,
+    /// even if no newer snapshot has arrived yet (e.g. offline overnight).
+    func hasReset(at now: Date) -> Bool {
+        resetsAt.map { $0 <= now } ?? false
+    }
+
+    /// The percentage to show at `now`: 0 once the window has reset.
+    func displayPercent(at now: Date) -> Double {
+        hasReset(at: now) ? 0 : percent
+    }
+}
+
 enum StatusBarRenderer {
     private static let barWidth: CGFloat = 36
     private static let barHeight: CGFloat = 8

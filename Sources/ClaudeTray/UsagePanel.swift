@@ -148,16 +148,17 @@ private struct UsageRow: View {
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 if let window {
-                    Text("\(Int(window.percent.rounded()))%")
+                    Text("\(Int(window.displayPercent(at: now).rounded()))%")
                         .font(.subheadline)
                         .monospacedDigit()
                 }
             }
             if let window {
-                ProgressView(value: min(max(window.percent / 100, 0), 1))
+                let percent = window.displayPercent(at: now)
+                ProgressView(value: min(max(percent / 100, 0), 1))
                     .progressViewStyle(.linear)
-                    .tint(UsageLevel(percent: window.percent).tint)
-                Text(resetCaption(for: window.resetsAt, now: now))
+                    .tint(UsageLevel(percent: percent).tint)
+                Text(window.hasReset(at: now) ? "Reset — waiting for update" : resetCaption(for: window.resetsAt, now: now))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
