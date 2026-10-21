@@ -26,9 +26,10 @@ enum UsageStatus: Sendable, Equatable {
 /// Polls the usage endpoint and publishes the latest snapshot.
 ///
 /// Scheduling: a single loop sleeps until `nextDueAt`; any fetch (loop, wake or
-/// user) pushes `nextDueAt` forward, so manual refreshes never cause a
-/// duplicate poll right after. The loop is suspended across system sleep and
-/// resumed ~5s after wake, fetching immediately on resume.
+/// user) sets `nextDueAt`, so manual refreshes never cause a duplicate poll right
+/// after, and a manual fetch restarts the loop so it wakes at the new time. The
+/// loop is suspended across system sleep and resumed ~5s after wake, fetching
+/// immediately on resume.
 ///
 /// App Nap: we hold a `.userInitiatedAllowingIdleSystemSleep` activity for the
 /// app's lifetime. Otherwise a hidden menu bar app gets napped and the 5-minute
@@ -104,6 +105,9 @@ final class UsageModel {
         if userInitiated, let last = lastAttemptAt, now.timeIntervalSince(last) < Self.userRefreshThrottle { return }
         if let until = rateLimitedUntil, until > now { return }
         await performFetch()
+        // The loop may be sleeping toward a later time than this fetch scheduled (e.g. a
+        // 60s Keychain re-check), so restart it. Not while asleep: wake restarts it.
+        if pollTask != nil { startLoop() }
     }
 
     // MARK: - Loop
