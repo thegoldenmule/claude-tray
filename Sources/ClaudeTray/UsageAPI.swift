@@ -35,13 +35,17 @@ enum UsageAPI {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 15
+        // After wake the network can take a few seconds to return: wait for it
+        // (bounded by the resource timeout) instead of failing immediately.
+        config.waitsForConnectivity = true
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         config.httpCookieStorage = nil
         return URLSession(configuration: config)
     }()
 
-    /// Fetches current usage. Always throws `UsageAPIError`.
+    /// Fetches current usage. Throws `UsageAPIError`, or `CancellationError` if the
+    /// calling task was cancelled (e.g. the poll loop stopping for system sleep).
     static func fetch(token: String, now: Date = Date()) async throws -> UsageSnapshot {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
@@ -56,6 +60,9 @@ enum UsageAPI {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
             throw UsageAPIError.network(error.localizedDescription)
         }
 

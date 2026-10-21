@@ -42,6 +42,8 @@ final class UsageModel {
     private static let baseInterval: TimeInterval = 300
     private static let maxBackoff: TimeInterval = 1800
     private static let maxRetryAfter: TimeInterval = 3600
+    /// First retry after a network failure; doubles up to `baseInterval`.
+    private static let networkRetryInterval: TimeInterval = 30
     /// Re-check the Keychain sooner when there's no usable token (no API call is made).
     private static let credentialRecheckInterval: TimeInterval = 60
     private static let userRefreshThrottle: TimeInterval = 60
@@ -56,6 +58,7 @@ final class UsageModel {
     @ObservationIgnored private var rateLimitedUntil: Date?
     @ObservationIgnored private var consecutiveRateLimits = 0
     @ObservationIgnored private var consecutiveKeychainFailures = 0
+    @ObservationIgnored private var consecutiveNetworkFailures = 0
     @ObservationIgnored private var started = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
     @ObservationIgnored private var activity: (any NSObjectProtocol)?
@@ -141,6 +144,7 @@ final class UsageModel {
         defer { isFetching = false }
 
         let now = Date()
+        let previousStatus = status
         lastAttemptAt = now
         // Provisional schedule so concurrent callers don't pile up; replaced below.
         nextDueAt = now.addingTimeInterval(Self.baseInterval)
@@ -155,8 +159,14 @@ final class UsageModel {
             snapshot = result
             status = .ok
             consecutiveRateLimits = 0
+            consecutiveNetworkFailures = 0
             rateLimitedUntil = nil
             nextDueAt = Date().addingTimeInterval(Self.baseInterval)
+        } catch is CancellationError {
+            // E.g. system sleep cancelled the poll task mid-request. Not a failure: keep
+            // what we're showing and just try again soon.
+            status = previousStatus
+            nextDueAt = Date().addingTimeInterval(Self.networkRetryInterval)
         } catch let error as UsageAPIError {
             handle(error)
         } catch {
@@ -186,7 +196,13 @@ final class UsageModel {
             // No usable token and no API call was made: re-check the Keychain sooner to recover quickly.
             nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
             message = error.userMessage
-        case .unauthorized, .http, .network, .decoding:
+        case .network:
+            // Often transient (e.g. just after wake): retry sooner.
+            consecutiveNetworkFailures += 1
+            let delay = min(Self.baseInterval, Self.networkRetryInterval * pow(2, Double(consecutiveNetworkFailures - 1)))
+            nextDueAt = now.addingTimeInterval(delay)
+            message = error.userMessage
+        case .unauthorized, .http, .decoding:
             nextDueAt = now.addingTimeInterval(Self.baseInterval)
             message = error.userMessage
         }
