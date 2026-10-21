@@ -14,7 +14,7 @@ struct ClaudeTrayApp: App {
         let model = UsageModel()
         _model = State(initialValue: model)
         model.start()
-        // Re-point the login item at this copy if the user wants it and it isn't already.
+        // Re-register the login item from this copy if the user wants it.
         LaunchAtLogin.reconcile()
     }
 

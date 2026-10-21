@@ -44,11 +44,11 @@ make clean
 ## Launch at login
 
 Tick "Launch at login" in the panel once and it stays correct across rebuilds.
-The choice is saved, and each launch re-registers the login item (via
-`SMAppService`) if it isn't already pointing at the running copy, so
-reinstalling, `make clean`, or moving the app doesn't silently break it. If macOS
-needs approval, the panel links to System Settings › Login Items. The toggle is
-disabled under `make dev`, since a bare executable can't be a login item.
+The choice is saved, and every launch re-registers the login item (via
+`SMAppService`) from the running copy, so reinstalling, `make clean`, or moving
+the app doesn't silently break it. If macOS needs approval, the panel links to
+System Settings › Login Items. The toggle is disabled under `make dev`, since a
+bare executable can't be a login item.
 
 ## Caveats
 

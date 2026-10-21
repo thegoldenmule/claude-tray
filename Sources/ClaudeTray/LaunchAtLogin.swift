@@ -8,12 +8,11 @@ import ServiceManagement
 /// `SMAppService.mainApp` registration at every launch. Background Task Management
 /// keys the login item by bundle ID, not path: `status` reports `.enabled` from any
 /// copy with our bundle ID even when the registered URL points at another (possibly
-/// deleted) copy. Calling `register()` again from the running copy re-points it, so
-/// we do that whenever this bundle isn't the one we last registered.
+/// deleted) copy, and macOS can silently re-point it at any copy it finds. Calling
+/// `register()` from the running copy re-points it here, so we do that every launch.
 @MainActor
 enum LaunchAtLogin {
     private static let intentKey = "launchAtLogin"
-    private static let registeredPathKey = "launchAtLoginBundlePath"
     private static let log = Logger(subsystem: "com.thegoldenmule.ClaudeTray", category: "LaunchAtLogin")
 
     /// Last registration failure, for the panel to show. Cleared on success.
@@ -33,16 +32,16 @@ enum LaunchAtLogin {
     static func reconcile() {
         guard isAvailable else { return }
         let defaults = UserDefaults.standard
+        // No longer used: registration is unconditional now.
+        defaults.removeObject(forKey: "launchAtLoginBundlePath")
         // Registered before the choice was persisted: adopt the system's state.
         if defaults.object(forKey: intentKey) == nil {
             guard status == .enabled else { return }
             defaults.set(true, forKey: intentKey)
         }
         guard isWanted else { return }
-        if status == .enabled, defaults.string(forKey: registeredPathKey) == bundlePath {
-            log.info("Login item already registered for \(bundlePath, privacy: .public)")
-            return
-        }
+        // Unconditional: status and any remembered path can't tell us where the
+        // registered URL points, and register() is a cheap no-op-or-fix when enabled.
         register()
     }
 
@@ -57,7 +56,6 @@ enum LaunchAtLogin {
             }
         } else {
             lastError = nil
-            UserDefaults.standard.removeObject(forKey: registeredPathKey)
             // Throws if nothing is registered; either way the result is "off".
             try? SMAppService.mainApp.unregister()
         }
@@ -68,7 +66,6 @@ enum LaunchAtLogin {
             // Also re-points an existing registration at this bundle.
             try SMAppService.mainApp.register()
             lastError = nil
-            UserDefaults.standard.set(bundlePath, forKey: registeredPathKey)
             log.notice("Registered login item for \(bundlePath, privacy: .public); status \(status.rawValue)")
         } catch {
             lastError = error.localizedDescription
