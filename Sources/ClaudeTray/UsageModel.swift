@@ -214,7 +214,12 @@ final class UsageModel {
             let delay = min(Self.maxBackoff, Self.credentialRecheckInterval * pow(2, Double(consecutiveKeychainFailures - 1)))
             nextDueAt = now.addingTimeInterval(delay)
             message = error.userMessage
-        case .notLoggedIn, .unreadableCredentials, .tokenExpired, .unauthorized:
+        case .notLoggedIn:
+            // Whatever we were showing belongs to an account that's no longer logged in.
+            snapshot = nil
+            nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
+            message = error.userMessage
+        case .unreadableCredentials, .tokenExpired, .unauthorized:
             // No usable token: re-check the Keychain sooner to recover quickly. The API is only
             // called again once the token changes (see rejectedToken).
             nextDueAt = now.addingTimeInterval(Self.credentialRecheckInterval)
