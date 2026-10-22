@@ -20,7 +20,7 @@ ifeq ($(strip $(SIGN_IDENTITY)),)
 override SIGN_IDENTITY := -
 endif
 
-.PHONY: build app run install clean dev release
+.PHONY: build app run install clean dev release icon dmg-background
 
 build:
 	$(SWIFT_BUILD)
@@ -28,9 +28,10 @@ build:
 app: build
 	@BIN_DIR="$$($(SWIFT_BUILD) --show-bin-path)"; \
 	rm -rf "$(APP_BUNDLE)"; \
-	mkdir -p "$(APP_BUNDLE)/Contents/MacOS"; \
+	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"; \
 	cp "$$BIN_DIR/$(APP_NAME)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"; \
-	cp "$(INFO_PLIST)" "$(APP_BUNDLE)/Contents/Info.plist"
+	cp "$(INFO_PLIST)" "$(APP_BUNDLE)/Contents/Info.plist"; \
+	cp Resources/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns"
 	codesign --force --options runtime $(CODESIGN_TIMESTAMP) -s "$(SIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE) (signed with: $(SIGN_IDENTITY))"
 
@@ -54,7 +55,18 @@ clean:
 dev:
 	swift run
 
-# Notarized universal app (zip) -> GitHub Release. See "Releasing" in README.md.
+# Regenerates Resources/AppIcon.icns from scripts/make-icon.swift (the .icns is committed).
+icon:
+	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	swift scripts/make-icon.swift "$$tmp"; \
+	iconutil -c icns "$$tmp/AppIcon.iconset" -o Resources/AppIcon.icns; \
+	echo "wrote Resources/AppIcon.icns"
+
+# Regenerates the release disk image's background, Resources/dmg-background{,@2x}.png (committed).
+dmg-background:
+	swift scripts/make-dmg-background.swift Resources
+
+# Notarized universal app (dmg + zip) -> GitHub Release. See "Releasing" in README.md.
 #   make release VERSION=1.2.3 [DRY_RUN=1] [TEAM_ID=...]
 release:
 	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" TEAM_ID="$(TEAM_ID)" scripts/release.sh

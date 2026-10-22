@@ -8,10 +8,10 @@ for a panel with both the session and weekly limits and when each resets.
 
 ## Install
 
-Download the latest `ClaudeTray-X.Y.Z.zip` from the
-[Releases page](https://github.com/thegoldenmule/claude-tray/releases/latest), unzip it
-(Safari does this automatically), move ClaudeTray.app to Applications, and open it from
-there. The app is signed with Developer ID and notarized by Apple. Requires macOS 14 or
+Download the latest `ClaudeTray-X.Y.Z.dmg` from the
+[Releases page](https://github.com/thegoldenmule/claude-tray/releases/latest), open it,
+drag ClaudeTray onto the Applications folder in its window, and open ClaudeTray from
+Applications. (The same app is also attached as a `.zip`.) The app is signed with Developer ID and notarized by Apple. Requires macOS 14 or
 later and Claude Code logged in with a Pro or Max subscription.
 
 ## Requirements
@@ -51,6 +51,8 @@ make install   # same, without launching
 make app       # release build -> build/ClaudeTray.app, codesigned (staging only)
 make dev       # swift run, no app bundle (quick iteration)
 make clean
+make icon            # regenerate Resources/AppIcon.icns from scripts/make-icon.swift
+make dmg-background  # regenerate the release disk image's background in Resources/
 ```
 
 `make run` installs to `~/Applications` and launches that copy; the bundle in
@@ -61,14 +63,16 @@ make clean
 ## Releasing
 
 ```sh
-make release VERSION=1.2.3            # notarized universal app (zip) -> GitHub release
-make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed zip in dist/ only; nothing notarized or published
+make release VERSION=1.2.3            # notarized universal app (dmg + zip) -> GitHub release
+make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed dmg and zip in dist/ only; nothing notarized or published
 ```
 
 Releases are signed and notarized with the Apple account signed into Xcode
 (Xcode › Settings › Accounts); there are no certificates, passwords or notary profiles to
 set up. The account needs the Account Holder or Admin role on the team, with access to
-cloud-managed Developer ID certificates.
+cloud-managed Developer ID certificates. Building the disk image also needs
+[uv](https://docs.astral.sh/uv/): the release runs a pinned
+[dmgbuild](https://github.com/dmgbuild/dmgbuild) through `uvx`.
 
 `make release` (see `scripts/release.sh`) checks that main is clean and in sync with
 origin, sets `CFBundleShortVersionString` to the version and `CFBundleVersion` to the
@@ -76,10 +80,13 @@ commit count, commits and tags `vX.Y.Z` locally, and builds a universal (arm64 +
 app. It wraps the app in an `.xcarchive` and exports it with `xcodebuild -exportArchive
 -allowProvisioningUpdates` (method `developer-id`), which signs it with a cloud-managed
 Developer ID certificate and uploads it to Apple's notary service, then waits for
-`xcodebuild -exportNotarizedApp` to return the notarized, stapled app. It zips that as
-`dist/ClaudeTray-X.Y.Z.zip`, checks the zip passes Gatekeeper as a quarantined download,
-and only then pushes the commit and tag and creates the GitHub release with the zip and
-its SHA-256. If anything fails before the push, it removes the local commit and tag.
+`xcodebuild -exportNotarizedApp` to return the notarized, stapled app. It packages that
+as `dist/ClaudeTray-X.Y.Z.dmg` (the app beside an Applications link, laid out by
+`scripts/dmg-settings.py`) and `dist/ClaudeTray-X.Y.Z.zip`, checks the app in each passes
+Gatekeeper as a quarantined download, and only then pushes the commit and tag and creates
+the GitHub release with both files and their SHA-256s. The disk image itself is unsigned
+(the cloud-managed certificate can't sign one locally); it still opens without a prompt,
+and the app inside carries its own notarization ticket. If anything fails before the push, it removes the local commit and tag.
 Override the team with `TEAM_ID=...`.
 
 ## Launch at login

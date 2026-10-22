@@ -2,8 +2,8 @@
 # Build, sign, notarize and publish a ClaudeTray release.
 #
 #   make release VERSION=1.2.3            # full release
-#   make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed zip only; nothing notarized,
-#                                         # committed or published
+#   make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed dmg and zip only; nothing
+#                                         # notarized, committed or published
 #
 # Signing and notarization go through the Apple account signed into Xcode
 # (Xcode > Settings > Accounts): the app is wrapped in an .xcarchive and exported with
@@ -12,6 +12,9 @@
 # service. No local Developer ID certificate, app-specific password or notarytool profile
 # is needed. The account needs the Account Holder or Admin role (with access to
 # cloud-managed Developer ID certificates) on the team.
+#
+# The release ships the stapled app twice: in a disk image (drag to the Applications link;
+# built by dmgbuild from scripts/dmg-settings.py, run through uvx) and in a zip.
 #
 # Environment:
 #   VERSION          required. X.Y.Z (a dry run also accepts X.Y.Z-suffix).
@@ -35,6 +38,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFO_PLIST=Resources/Info.plist
 DIST_DIR=dist
 PLISTBUDDY=/usr/libexec/PlistBuddy
+DMGBUILD="dmgbuild[badge_icons]==1.6.7"   # run with uvx; pinned so the image layout is reproducible
 CO_AUTHOR="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 VERSION="${VERSION:-}"
@@ -76,10 +80,10 @@ on_exit() {
     if [[ $PUSHED -eq 1 ]]; then
         cat >&2 <<EOF
 
-${RED}Release failed after $TAG was pushed.${RESET} The notarized zip is in $DIST_DIR/.
+${RED}Release failed after $TAG was pushed.${RESET} The notarized dmg and zip are in $DIST_DIR/.
 Finish publishing by hand:
-    gh release create $TAG $ZIP_PATH $SUM_PATH --verify-tag --title "$APP_NAME $VERSION" \\
-        --generate-notes --notes-file $NOTES_PATH
+    gh release create $TAG $DMG_PATH $DMG_SUM_PATH $ZIP_PATH $SUM_PATH --verify-tag \\
+        --title "$APP_NAME $VERSION" --generate-notes --notes-file $NOTES_PATH
 EOF
         return
     fi
@@ -107,7 +111,7 @@ trap 'exit 130' INT TERM
 # ---------------------------------------------------------------- preflight
 
 step "Preflight"
-[[ $DRY_RUN -eq 1 ]] && info "${YELLOW}DRY RUN${RESET}: builds a Developer ID-signed zip; no commit, tag, notarization, push or release."
+[[ $DRY_RUN -eq 1 ]] && info "${YELLOW}DRY RUN${RESET}: builds a Developer ID-signed dmg and zip; no commit, tag, notarization, push or release."
 
 [[ -n "$VERSION" ]] || die "VERSION is required, e.g.: make release VERSION=1.2.3"
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -121,7 +125,7 @@ fi
 TAG="v$VERSION"
 ok "version $VERSION (tag $TAG)"
 
-for tool in swift codesign xcodebuild xcrun ditto git gh shasum lipo spctl "$PLISTBUDDY"; do
+for tool in swift codesign xcodebuild xcrun ditto hdiutil uvx git gh shasum lipo spctl "$PLISTBUDDY"; do
     command -v "$tool" >/dev/null || die "required tool not found: $tool"
 done
 
@@ -211,9 +215,11 @@ EXPORT_DIR="$WORK_DIR/export"         # Developer ID-signed app (dry run)
 NOTARIZED_DIR="$WORK_DIR/notarized"   # notarized, stapled app (real release)
 ZIP_PATH="$DIST_DIR/$APP_NAME-$VERSION.zip"
 SUM_PATH="$ZIP_PATH.sha256"
+DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+DMG_SUM_PATH="$DMG_PATH.sha256"
 NOTES_PATH="$DIST_DIR/release-notes-$VERSION.md"
 LOG_PATH="$WORK_DIR/xcodebuild.log"
-rm -rf "$WORK_DIR" "$ZIP_PATH" "$SUM_PATH"
+rm -rf "$WORK_DIR" "$ZIP_PATH" "$SUM_PATH" "$DMG_PATH" "$DMG_SUM_PATH"
 mkdir -p "$WORK_DIR"
 
 step "Build universal app bundle"
@@ -358,19 +364,28 @@ grep -E '^(Authority|TeamIdentifier|Timestamp)' <<<"$SIGNATURE" | sed 's/^/    /
 grep -q "^Authority=Developer ID Application: .*($TEAM_ID)$" <<<"$SIGNATURE" \
     || die "$APP_PATH is not signed with a Developer ID Application certificate for team $TEAM_ID"
 ok "signed with Developer ID ($TEAM_ID)"
+[[ -f "$APP_PATH/Contents/Resources/AppIcon.icns" ]] || die "$APP_PATH has no AppIcon.icns"
+ok "app icon"
 
 # ---------------------------------------------------------------- package + verify
 
-# A zip of the stapled app rather than a DMG: the cloud-managed certificate can't sign a
-# disk image locally, and Gatekeeper rejects an unsigned, unnotarized DMG ("no usable
-# signature"). A zip isn't assessed itself; the app inside carries its own ticket.
+# The disk image itself is neither signed nor notarized: the cloud-managed certificate can't
+# sign one locally. `spctl -t open` rejects it ("no usable signature"), but a downloaded copy
+# still mounts without a prompt, and the app dragged out of it carries its own stapled ticket.
+step "Package $DMG_PATH"
+uvx --quiet --from "$DMGBUILD" dmgbuild -s scripts/dmg-settings.py -D app="$APP_PATH" \
+    "$APP_NAME" "$DMG_PATH" >"$WORK_DIR/dmgbuild.log" 2>&1 \
+    || { tail -n 20 "$WORK_DIR/dmgbuild.log" | sed 's/^/    /' >&2; die "dmgbuild failed (log: $WORK_DIR/dmgbuild.log)"; }
+hdiutil verify -quiet "$DMG_PATH" || die "hdiutil verify failed for $DMG_PATH"
+ok "created $DMG_PATH ($(du -h "$DMG_PATH" | awk '{print $1}'))"
+
 step "Package $ZIP_PATH"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 ok "created $ZIP_PATH ($(du -h "$ZIP_PATH" | awk '{print $1}'))"
 
 step "Verify as a download"
-# Mark a copy as downloaded by Safari, extract it, and assess the result like Gatekeeper
-# would on first launch. Expected to be rejected in a dry run (not notarized).
+# Mark copies as downloaded by Safari, mount or extract them, and assess the app inside like
+# Gatekeeper would on first launch. Expected to be rejected in a dry run (not notarized).
 gatekeeper() {
     if "$@" 2>&1 | sed 's/^/    /'; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
         return 0
@@ -380,21 +395,43 @@ gatekeeper() {
         die "Gatekeeper rejected: $*"
     fi
 }
+quarantine() { xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;" "$1"; }
+# Assesses an app taken out of a download (stapled ticket only checked for a real release).
+assess() {
+    codesign --verify --deep --strict "$1"
+    ok "signature verifies"
+    gatekeeper spctl -a -vv -t exec "$1"
+    if [[ $DRY_RUN -eq 0 ]]; then
+        xcrun stapler validate -q "$1" || die "$1 has no stapled ticket"
+        ok "stapled ticket"
+    fi
+}
 VERIFY_DIR="$WORK_DIR/verify"
-rm -rf "$VERIFY_DIR" && mkdir -p "$VERIFY_DIR/extracted"
+MOUNT_DIR="$VERIFY_DIR/mnt"
+rm -rf "$VERIFY_DIR" && mkdir -p "$VERIFY_DIR/extracted" "$VERIFY_DIR/installed" "$MOUNT_DIR"
+
+info "$(basename "$DMG_PATH"):"
+cp "$DMG_PATH" "$VERIFY_DIR/"
+quarantine "$VERIFY_DIR/$(basename "$DMG_PATH")"
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$MOUNT_DIR" "$VERIFY_DIR/$(basename "$DMG_PATH")" \
+    || die "could not mount $DMG_PATH"
+DMG_LAYOUT_OK=0
+[[ -d "$MOUNT_DIR/$APP_NAME.app" && "$(readlink "$MOUNT_DIR/Applications")" == /Applications ]] && DMG_LAYOUT_OK=1
+[[ $DMG_LAYOUT_OK -eq 1 ]] && ditto "$MOUNT_DIR/$APP_NAME.app" "$VERIFY_DIR/installed/$APP_NAME.app"   # the drag
+hdiutil detach -quiet "$MOUNT_DIR" || hdiutil detach -quiet -force "$MOUNT_DIR" || warn "could not detach $MOUNT_DIR"
+[[ $DMG_LAYOUT_OK -eq 1 ]] || die "dmg does not contain $APP_NAME.app beside an Applications link"
+ok "dmg holds $APP_NAME.app and an Applications link"
+assess "$VERIFY_DIR/installed/$APP_NAME.app"
+
+info "$(basename "$ZIP_PATH"):"
 cp "$ZIP_PATH" "$VERIFY_DIR/"
-xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;" "$VERIFY_DIR/$(basename "$ZIP_PATH")"
+quarantine "$VERIFY_DIR/$(basename "$ZIP_PATH")"
 ditto -x -k "$VERIFY_DIR/$(basename "$ZIP_PATH")" "$VERIFY_DIR/extracted"
 EXTRACTED_APP="$VERIFY_DIR/extracted/$APP_NAME.app"
 [[ -d "$EXTRACTED_APP" ]] || die "zip does not contain $APP_NAME.app at its root"
-xattr -p com.apple.quarantine "$EXTRACTED_APP" >/dev/null 2>&1 \
-    || xattr -w com.apple.quarantine "0083;$(printf %x "$(date +%s)");Safari;" "$EXTRACTED_APP"
-codesign --verify --deep --strict "$EXTRACTED_APP"
-ok "extracted app signature verifies"
-gatekeeper spctl -a -vv -t exec "$EXTRACTED_APP"
+xattr -p com.apple.quarantine "$EXTRACTED_APP" >/dev/null 2>&1 || quarantine "$EXTRACTED_APP"
+assess "$EXTRACTED_APP"
 if [[ $DRY_RUN -eq 0 ]]; then
-    xcrun stapler validate -q "$EXTRACTED_APP" || die "extracted app has no stapled ticket"
-    ok "extracted app has a stapled ticket"
     if command -v syspolicy_check >/dev/null; then
         syspolicy_check distribution "$EXTRACTED_APP" 2>&1 | sed 's/^/    /' \
             || die "syspolicy_check distribution failed"
@@ -402,35 +439,40 @@ if [[ $DRY_RUN -eq 0 ]]; then
 fi
 rm -rf "$VERIFY_DIR"
 
-(cd "$DIST_DIR" && shasum -a 256 "$(basename "$ZIP_PATH")" >"$(basename "$SUM_PATH")")
-ok "sha256 $(awk '{print $1}' "$SUM_PATH")"
+for f in "$DMG_PATH" "$ZIP_PATH"; do
+    (cd "$DIST_DIR" && shasum -a 256 "$(basename "$f")" >"$(basename "$f").sha256")
+    ok "sha256 $(awk '{print $1}' "$f.sha256")  $(basename "$f")"
+done
 
 # ---------------------------------------------------------------- publish
 
 cat >"$NOTES_PATH" <<EOF
 ## Install
 
-1. Download \`$APP_NAME-$VERSION.zip\` below and unzip it (Safari does this automatically).
-2. Move **$APP_NAME.app** to your **Applications** folder.
+1. Download \`$APP_NAME-$VERSION.dmg\` below and open it.
+2. Drag **$APP_NAME** onto the **Applications** folder in the window that appears, then eject
+   the disk image.
 3. Open $APP_NAME from Applications. It appears in the menu bar.
+
+Prefer a zip? \`$APP_NAME-$VERSION.zip\` holds the same app: unzip it and move
+$APP_NAME.app to Applications yourself.
 
 Requires macOS 14 or later and [Claude Code](https://docs.claude.com/en/docs/claude-code)
 logged in with a Claude Pro or Max subscription. The app is signed with Developer ID and
-notarized by Apple. Verify the download with
-\`shasum -a 256 -c $APP_NAME-$VERSION.zip.sha256\`.
+notarized by Apple. Verify a download with \`shasum -a 256 -c <file>.sha256\`.
 EOF
 
 step "Publish"
 if [[ $DRY_RUN -eq 1 ]]; then
     skip "git push --atomic origin main $TAG"
-    skip "gh release create $TAG $ZIP_PATH $SUM_PATH --title \"$APP_NAME $VERSION\" --generate-notes (notes: $NOTES_PATH)"
-    printf '\n%sDry run complete.%s Developer ID-signed (not notarized) zip: %s\n' "$GREEN" "$RESET" "$ZIP_PATH"
+    skip "gh release create $TAG $DMG_PATH $DMG_SUM_PATH $ZIP_PATH $SUM_PATH --title \"$APP_NAME $VERSION\" --generate-notes (notes: $NOTES_PATH)"
+    printf '\n%sDry run complete.%s Developer ID-signed (not notarized) dmg and zip: %s, %s\n' "$GREEN" "$RESET" "$DMG_PATH" "$ZIP_PATH"
     exit 0
 fi
 
 git push --atomic origin main "$TAG"
 PUSHED=1
 ok "pushed main and $TAG"
-gh release create "$TAG" "$ZIP_PATH" "$SUM_PATH" --verify-tag \
+gh release create "$TAG" "$DMG_PATH" "$DMG_SUM_PATH" "$ZIP_PATH" "$SUM_PATH" --verify-tag \
     --title "$APP_NAME $VERSION" --generate-notes --notes-file "$NOTES_PATH"
 printf '\n%sReleased %s%s: %s\n' "$GREEN" "$TAG" "$RESET" "$(gh release view "$TAG" --json url -q .url)"
