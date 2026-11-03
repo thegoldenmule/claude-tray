@@ -273,109 +273,204 @@ private struct UsageRow: View {
     }
 }
 
-/// The weekly limit with its pace: a bar with a tick where usage would be at an even pace,
-/// then how far off pace it is and where it's heading.
+/// The weekly limit with its pace, condensed into the bar: the used % inside the fill, a tick
+/// where usage would be at an even pace, and the gap between them labelled ("43 under"), or
+/// the overshoot past the tick coloured and labelled ("+12"). One line below says where the
+/// week is heading.
 private struct WeeklyRow: View {
     let window: UsageWindow?
     let pace: WeeklyPace?
     let now: Date
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Weekly")
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 if let window {
-                    Text("\(Int(window.displayPercent(at: now).rounded()))%")
-                        .font(.subheadline)
+                    Text(resetText(window))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
             }
             if let window {
-                let percent = window.displayPercent(at: now)
-                ProgressView(value: min(max(percent / 100, 0), 1))
-                    .progressViewStyle(.linear)
-                    .tint(pace?.severity.tint ?? UsageLevel(percent: percent).tint)
-                    .overlay { paceTick }
-                if let pace {
-                    paceDetails(pace)
+                PaceBar(used: window.displayPercent(at: now), pace: pace)
+                    .help(pace.map { "Expected by now at an even pace: \(Int($0.expected.rounded()))%" } ?? "")
+                if let pace, let summary = summary(pace) {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(pace.severity.textTint)
+                        .monospacedDigit()
                 }
-                Text(window.hasReset(at: now) ? "Reset — waiting for update" : resetCaption(for: window.resetsAt, now: now))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
             } else {
-                ProgressView(value: 0)
-                    .progressViewStyle(.linear)
+                PaceBar(used: 0, pace: nil)
                 Text("No data")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
     }
 
-    @ViewBuilder
-    private var paceTick: some View {
-        if let pace, pace.status != .limitReached {
-            GeometryReader { geometry in
-                Capsule()
-                    .fill(.primary.opacity(pace.pausedUntil == nil ? 0.85 : 0.35))
-                    .frame(width: 2, height: 12)
-                    .position(x: geometry.size.width * min(max(pace.expected / 100, 0), 1),
-                              y: geometry.size.height / 2)
-            }
-            .accessibilityHidden(true)
-        }
+    private func resetText(_ window: UsageWindow) -> String {
+        if window.hasReset(at: now) { return "Reset — waiting for update" }
+        guard let resetsAt = window.resetsAt else { return "Reset time unknown" }
+        // Round to the minute: the API's reset timestamps drift by fractions of a second.
+        let rounded = Date(timeIntervalSinceReferenceDate: (resetsAt.timeIntervalSinceReferenceDate / 60).rounded() * 60)
+        return "Resets \(resetClockText(rounded, now: now))"
     }
 
-    @ViewBuilder
-    private func paceDetails(_ pace: WeeklyPace) -> some View {
-        Text(headline(pace))
-            .font(.caption.weight(.medium))
-            .foregroundStyle(pace.severity.textTint)
-        if let pausedUntil = pace.pausedUntil {
-            caption(pausedUntil >= pace.resetsAt
-                    ? "Weekend — pace paused until reset"
-                    : "Weekend — pace paused until \(resetClockText(pausedUntil, now: now))")
-        }
-        if let runway = runway(pace) {
-            caption(runway)
-        }
-    }
-
-    private func caption(_ text: String) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func headline(_ pace: WeeklyPace) -> String {
-        let expected = "expected \(Int(pace.expected.rounded()))%"
-        let points = Int(abs(pace.delta).rounded())
+    /// Where the week is heading, in one line.
+    private func summary(_ pace: WeeklyPace) -> String? {
+        var parts: [String] = []
         switch pace.status {
-        case .limitReached: return "Limit reached"
-        case .tooEarly: return "Too early to tell pace · \(expected)"
-        case .onTrack: return "On pace · \(expected)"
-        case .over: return "\(points) pts over pace · \(expected)"
-        case .under: return "\(points) pts under pace · \(expected)"
+        case .limitReached:
+            parts.append("Limit reached")
+        case .tooEarly:
+            parts.append("Too early to judge pace")
+        case .onTrack:
+            parts.append("On pace")
+        case .under:
+            break
+        case .over:
+            if let runsOutAt = pace.runsOutAt {
+                // The projection isn't minute-accurate; show it to the quarter hour.
+                let rounded = Date(timeIntervalSinceReferenceDate: (runsOutAt.timeIntervalSinceReferenceDate / 900).rounded() * 900)
+                parts.append("Runs out \(resetClockText(rounded, now: now))")
+            }
+        }
+        if pace.pausedUntil != nil, pace.status != .limitReached {
+            parts.append("paused for weekend")
+        }
+        guard !parts.isEmpty else { return nil }
+        let text = parts.joined(separator: " · ")
+        return text.prefix(1).uppercased() + text.dropFirst()
+    }
+
+    private var accessibilityText: String {
+        guard let window else { return "Weekly usage, no data" }
+        var text = "Weekly usage \(Int(window.displayPercent(at: now).rounded())) percent"
+        if let pace {
+            text += ", \(pace.accessibilitySummary), expected \(Int(pace.expected.rounded())) percent"
+            if let summary = summary(pace) { text += ". \(summary)" }
+        }
+        return text + ". \(resetText(window))"
+    }
+}
+
+/// A capsule bar that carries its own labels. Segments, left to right:
+/// - fill (used, up to the tick when over pace), labelled with the used %;
+/// - under pace: the gap up to the tick, lightly tinted, labelled "N under";
+/// - over pace: the overshoot past the tick in orange/red, labelled "+N";
+/// - the tick at the expected value, drawn over everything and overhanging the bar.
+/// A label that doesn't fit its segment is dropped (the used % moves just past the fill).
+private struct PaceBar: View {
+    let used: Double
+    let pace: WeeklyPace?
+
+    private static let height: CGFloat = 18
+    private static let tickOverhang: CGFloat = 3
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let usedX = width * Self.fraction(used)
+            let expectedX = pace.flatMap { $0.status == .limitReached ? nil : width * Self.fraction($0.expected) }
+            let isOver = pace?.status == .over || (pace?.status == .limitReached)
+            let baseX = isOver ? min(usedX, expectedX ?? usedX) : usedX
+            let overshootColor = pace?.severity.tint ?? .accentColor
+
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+
+                // Under pace: the room left before the tick.
+                if let expectedX, !isOver, expectedX > usedX {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.18))
+                        .frame(width: expectedX - usedX)
+                        .offset(x: usedX)
+                }
+                // The fill, up to the tick when over pace (all red at the limit).
+                Rectangle()
+                    .fill(pace?.status == .limitReached ? overshootColor : Color.accentColor)
+                    .frame(width: baseX)
+                // Over pace: the overshoot past the tick.
+                if isOver, usedX > baseX {
+                    Rectangle()
+                        .fill(overshootColor)
+                        .frame(width: usedX - baseX)
+                        .offset(x: baseX)
+                }
+
+                labels(width: width, usedX: usedX, baseX: baseX, expectedX: expectedX, isOver: isOver)
+            }
+            .clipShape(Capsule())
+            .overlay(alignment: .leading) {
+                if let expectedX {
+                    Capsule()
+                        .fill(.primary.opacity(pace?.pausedUntil == nil ? 0.85 : 0.35))
+                        .frame(width: 2, height: Self.height + 2 * Self.tickOverhang)
+                        .offset(x: min(max(expectedX - 1, 0), width - 2))
+                }
+            }
+        }
+        .frame(height: Self.height)
+        .padding(.vertical, Self.tickOverhang)
+    }
+
+    @ViewBuilder
+    private func labels(width: CGFloat, usedX: CGFloat, baseX: CGFloat, expectedX: CGFloat?, isOver: Bool) -> some View {
+        let percent = "\(Int(used.rounded()))%"
+        let fillFits = baseX >= Self.textWidth(percent) + 10
+        // Used %, inside the fill, or just past it when the fill is too narrow.
+        if fillFits {
+            label(percent, color: .white, width: baseX)
+        } else if usedX + Self.textWidth(percent) + 10 <= width {
+            label(percent, color: .secondary, width: Self.textWidth(percent) + 10)
+                .offset(x: max(usedX, 0))
+        }
+        // The gap or the overshoot, labelled with how far off pace usage is.
+        if fillFits, let pace, let expectedX {
+            let points = Int(abs(pace.delta).rounded())
+            if isOver, pace.status == .over, usedX > baseX {
+                fitted(["+\(points)"], color: .white, from: baseX, to: usedX)
+            } else if !isOver, pace.status == .under {
+                fitted(["\(points) under", "−\(points)"], color: .secondary, from: usedX, to: expectedX)
+            }
         }
     }
 
-    /// "At this rate, runs out Thu 2:15 PM" / "At this rate, ends the week at 47%".
-    private func runway(_ pace: WeeklyPace) -> String? {
-        if let runsOutAt = pace.runsOutAt {
-            // The projection isn't minute-accurate; show it to the quarter hour.
-            let rounded = Date(timeIntervalSinceReferenceDate: (runsOutAt.timeIntervalSinceReferenceDate / 900).rounded() * 900)
-            return "At this rate, runs out \(resetClockText(rounded, now: now))"
+    /// The first of `candidates` that fits between `from` and `to`, centred; nothing if none fits.
+    @ViewBuilder
+    private func fitted(_ candidates: [String], color: some ShapeStyle, from: CGFloat, to: CGFloat) -> some View {
+        let available = to - from
+        if let text = candidates.first(where: { Self.textWidth($0) + 4 <= available }) {
+            label(text, color: color, width: available)
+                .offset(x: from)
         }
-        if let projected = pace.projectedAtReset {
-            return "At this rate, ends the week at \(Int(min(projected, 100).rounded()))%"
-        }
-        return nil
+    }
+
+    private func label(_ text: String, color: some ShapeStyle, width: CGFloat) -> some View {
+        Text(verbatim: text)
+            .font(Self.labelFont)
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .frame(width: max(width, 0), height: Self.height)
+    }
+
+    private static let labelFont = Font.system(size: 11, weight: .semibold)
+    private static let measureFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+
+    private static func textWidth(_ text: String) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: measureFont]).width)
+    }
+
+    private static func fraction(_ percent: Double) -> CGFloat {
+        CGFloat(min(max(percent / 100, 0), 1))
     }
 }
 
