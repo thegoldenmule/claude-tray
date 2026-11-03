@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct ClaudeTrayApp: App {
     @State private var model: UsageModel
+    @State private var updates: UpdateModel
     @State private var clock = MinuteClock()
     @AppStorage(SettingsKey.countWeekends) private var countWeekends = false
     @AppStorage(SettingsKey.tolerance) private var tolerance = PaceSettings().tolerance
@@ -18,13 +19,16 @@ struct ClaudeTrayApp: App {
         let model = UsageModel()
         _model = State(initialValue: model)
         model.start()
+        let updates = UpdateModel()
+        _updates = State(initialValue: updates)
+        updates.start()
         // Re-register the login item from this copy if the user wants it.
         LaunchAtLogin.reconcile()
     }
 
     var body: some Scene {
         MenuBarExtra {
-            UsagePanel(model: model)
+            UsagePanel(model: model, updates: updates)
         } label: {
             // Only Image/Text survive in a MenuBarExtra label, so the bar is
             // pre-rendered into an NSImage.

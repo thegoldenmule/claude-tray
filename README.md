@@ -69,6 +69,18 @@ weekly pace" in the panel to spread it over all seven days. The window is the se
   account has a session limit and weekly pace when it doesn't, or when the weekly limit
   is about to run out first.
 
+## Updates
+
+The panel shows the running version and whether a newer release is out. ClaudeTray asks
+GitHub's public `releases/latest` endpoint (unauthenticated) 10 seconds after launch, unless
+the last answer is under an hour old, then every 12 hours and whenever the panel opens while
+a check is due; a failed check retries after 30 minutes (or when GitHub's rate limit resets).
+Requests reuse GitHub's ETag, so an unchanged release costs a body-less 304. The answer is
+cached in the app's preferences (`updateCheckCache`). When a newer release exists, "Update
+to X.Y.Z…" opens its release page; nothing is downloaded or installed automatically. Click
+"Up to date" (or "Check for Updates") to check right away. `make dev` builds have no version
+and never check. `CT_LIVE=1 swift test --filter liveUpdateCheck` runs a real check.
+
 ## Build and run
 
 ```sh
@@ -76,7 +88,7 @@ make run       # build, install to ~/Applications/ClaudeTray.app, quit any runni
 make install   # same, without launching
 make app       # release build -> build/ClaudeTray.app, codesigned (staging only)
 make dev       # swift run, no app bundle (quick iteration)
-make test      # unit tests (pace math, response parsing)
+make test      # unit tests (pace math, response parsing, update check)
 make clean
 make icon            # regenerate Resources/AppIcon.icns from scripts/make-icon.swift
 make dmg-background  # regenerate the release disk image's background in Resources/

@@ -4,6 +4,7 @@ import ServiceManagement
 
 struct UsagePanel: View {
     private let model: UsageModel
+    private let updates: UpdateModel
     @State private var loginWanted = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
@@ -11,8 +12,9 @@ struct UsagePanel: View {
     @AppStorage(SettingsKey.tolerance) private var tolerance = PaceSettings().tolerance
     @AppStorage(SettingsKey.menuBarMode) private var menuBarMode = MenuBarMode.auto
 
-    init(model: UsageModel) {
+    init(model: UsageModel, updates: UpdateModel) {
         self.model = model
+        self.updates = updates
     }
 
     var body: some View {
@@ -64,6 +66,8 @@ struct UsagePanel: View {
                 launchAtLoginNote
             }
 
+            updateRow
+
             Button("Quit ClaudeTray") {
                 NSApp.terminate(nil)
             }
@@ -75,6 +79,7 @@ struct UsagePanel: View {
             // Read the live registration state every time; the user can change it in System Settings.
             syncLaunchAtLogin()
             Task { await model.refresh(userInitiated: true) }
+            updates.panelOpened()
         }
     }
 
@@ -104,6 +109,60 @@ struct UsagePanel: View {
         }
         .pickerStyle(.menu)
         .fixedSize()
+    }
+
+    // MARK: - Updates
+
+    /// The running version and whether a newer release is out. Never downloads anything:
+    /// "Update to X…" opens the release page.
+    @ViewBuilder
+    private var updateRow: some View {
+        if updates.app.version != nil {
+            HStack(alignment: .firstTextBaseline) {
+                Text(updates.app.displayString)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                switch updates.state {
+                case .available(let release):
+                    Button {
+                        updates.openReleasePage(release)
+                    } label: {
+                        Text(verbatim: "Update to \(release.version)…")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("Opens the \(release.tag) release page")
+                case .checking:
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.mini)
+                        Text("Checking…")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                case .failed(let reason):
+                    checkForUpdatesButton(label: "Couldn't check — retry")
+                        .foregroundStyle(.orange)
+                        .help(reason)
+                case .upToDate:
+                    checkForUpdatesButton(label: "Up to date")
+                        .help(lastCheckedHelp)
+                case .notChecked, .unversioned:
+                    checkForUpdatesButton(label: "Check for Updates")
+                }
+            }
+        }
+    }
+
+    private func checkForUpdatesButton(label: String) -> some View {
+        Button(label) { updates.checkNow() }
+            .buttonStyle(.link)
+            .font(.caption)
+    }
+
+    private var lastCheckedHelp: String {
+        guard let checkedAt = updates.cache.checkedAt else { return "Check for updates" }
+        return "Checked \(checkedAt.formatted(date: .abbreviated, time: .shortened)). Click to check again."
     }
 
     // MARK: - Status line
