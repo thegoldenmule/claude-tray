@@ -5,13 +5,16 @@
 #   make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed dmg and zip only; nothing
 #                                         # notarized, committed or published
 #
-# Signing and notarization go through the Apple account signed into Xcode
-# (Xcode > Settings > Accounts): the app is wrapped in an .xcarchive and exported with
-# `xcodebuild -exportArchive -allowProvisioningUpdates` (method developer-id), which signs
-# it with a cloud-managed Developer ID certificate and uploads it to Apple's notary
-# service. No local Developer ID certificate, app-specific password or notarytool profile
-# is needed. The account needs the Account Holder or Admin role (with access to
-# cloud-managed Developer ID certificates) on the team.
+# The app is wrapped in an .xcarchive and exported with `xcodebuild -exportArchive
+# -allowProvisioningUpdates` (method developer-id), which signs it with a cloud-managed
+# Developer ID certificate and uploads it to Apple's notary service. No local Developer ID
+# certificate, app-specific password or notarytool profile is needed.
+#
+# xcodebuild authenticates with an App Store Connect API key (ASC_KEY_ID, ASC_ISSUER_ID,
+# ASC_KEY_PATH, from the environment or the repo's gitignored .env). The key needs the Admin
+# role, with access to cloud-managed Developer ID certificates. Without a key it falls back
+# to the Apple account signed into Xcode (Xcode > Settings > Accounts), which needs the
+# Account Holder or Admin role.
 #
 # The release ships the stapled app twice: in a disk image (drag to the Applications link;
 # built by dmgbuild from scripts/dmg-settings.py, run through uvx) and in a zip.
@@ -22,6 +25,9 @@
 #                    notarization, push and publish.
 #   TEAM_ID          Apple developer team. Default: QKMK66X2FU.
 #   NOTARY_TIMEOUT   seconds to wait for notarization. Default: 1800.
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH
+#                    App Store Connect API key (path to its AuthKey_<id>.p8; ~ allowed).
+#                    Read from .env when not set in the environment.
 #
 # Build number (CFBundleVersion): the number of commits on main including the release
 # commit (`git rev-list --count HEAD` + 1), bumped past the current value if that would
@@ -163,13 +169,35 @@ else
     ok "tag $TAG is unused (local and origin)"
 fi
 
-# Signing and notarization need an Apple account in Xcode (fatal even for a dry run,
-# which still signs with Developer ID). Only account identifiers are read, never emails.
-XCODE_ACCOUNTS="$(defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null || true)"
-if grep -q identifier <<<"$XCODE_ACCOUNTS"; then
-    ok "Xcode has an Apple account signed in (team $TEAM_ID)"
+# Signing and notarization need credentials (fatal even for a dry run, which still signs
+# with Developer ID): an App Store Connect API key, else an Apple account in Xcode.
+# Values from .env are read as plain text (never sourced) and never printed.
+env_from_dotenv() {
+    local name=$1 value
+    [[ -n "${!name:-}" || ! -f .env ]] && return 0
+    value="$(grep -E "^${name}=" .env | tail -n 1 | cut -d= -f2-)" || return 0
+    value="${value%\"}"; value="${value#\"}"
+    printf -v "$name" '%s' "$value"
+}
+for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH; do env_from_dotenv "$name"; done
+ASC_KEY_ID="${ASC_KEY_ID:-}" ASC_ISSUER_ID="${ASC_ISSUER_ID:-}" ASC_KEY_PATH="${ASC_KEY_PATH:-}"
+ASC_KEY_PATH="${ASC_KEY_PATH/#\~/$HOME}"
+AUTH_ARGS=()
+if [[ -n "$ASC_KEY_ID" && -n "$ASC_ISSUER_ID" && -n "$ASC_KEY_PATH" ]]; then
+    [[ -r "$ASC_KEY_PATH" ]] || die "ASC_KEY_PATH does not point to a readable .p8 file"
+    AUTH_ARGS=(-authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID"
+               -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+    ok "auth: App Store Connect API key (team $TEAM_ID)"
+elif [[ -n "$ASC_KEY_ID$ASC_ISSUER_ID$ASC_KEY_PATH" ]]; then
+    die "App Store Connect API key is incomplete: set all of ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH (environment or .env)"
 else
-    die "no Apple account in Xcode. Open Xcode > Settings > Accounts and sign in, then re-run."
+    # Only account identifiers are read, never emails.
+    XCODE_ACCOUNTS="$(defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null || true)"
+    if grep -q identifier <<<"$XCODE_ACCOUNTS"; then
+        ok "auth: Apple account signed into Xcode (team $TEAM_ID)"
+    else
+        die "no signing credentials: set ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH in .env (an App Store Connect API key with the Admin role), or sign in under Xcode > Settings > Accounts."
+    fi
 fi
 
 if gh auth status >/dev/null 2>&1; then
@@ -283,10 +311,11 @@ ok "archive ready"
 
 # ---------------------------------------------------------------- sign + notarize
 
-# Runs xcodebuild, appending its output to the log; prints the last lines on failure.
+# Runs xcodebuild with the auth arguments, appending its output to the log (the command line
+# is logged without them); prints the last lines on failure.
 xcb() {
     printf '\n$ xcodebuild %s\n' "$*" >>"$LOG_PATH"
-    if xcodebuild "$@" >>"$LOG_PATH" 2>&1; then
+    if xcodebuild "$@" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} >>"$LOG_PATH" 2>&1; then
         return 0
     fi
     tail -n 20 "$LOG_PATH" | sed 's/^/    /' >&2
@@ -315,24 +344,25 @@ EOF
 }
 
 if [[ $DRY_RUN -eq 1 ]]; then
-    step "Sign with Developer ID (cloud-managed, via Xcode)"
+    step "Sign with Developer ID (cloud-managed)"
     xcb -exportArchive -archivePath "$ARCHIVE_PATH" -exportPath "$EXPORT_DIR" \
         -exportOptionsPlist "$(export_options export)" -allowProvisioningUpdates \
-        || die "Developer ID export failed (log: $LOG_PATH). If it mentions your account or role, check Xcode > Settings > Accounts."
+        || die "Developer ID export failed (log: $LOG_PATH). If it mentions authentication or a role, check the API key (Admin role) or Xcode > Settings > Accounts."
     APP_PATH="$EXPORT_DIR/$APP_NAME.app"
     skip "upload to Apple's notary service and stapling"
 else
-    step "Sign with Developer ID (cloud-managed, via Xcode) and submit for notarization"
+    step "Sign with Developer ID (cloud-managed) and submit for notarization"
     xcb -exportArchive -archivePath "$ARCHIVE_PATH" -exportPath "$WORK_DIR/upload" \
         -exportOptionsPlist "$(export_options upload)" -allowProvisioningUpdates \
-        || die "Developer ID signing/upload failed (log: $LOG_PATH). If it mentions your account or role, check Xcode > Settings > Accounts."
+        || die "Developer ID signing/upload failed (log: $LOG_PATH). If it mentions authentication or a role, check the API key (Admin role) or Xcode > Settings > Accounts."
     ok "uploaded to Apple's notary service"
 
     info "waiting for notarization (usually a few minutes; timeout ${NOTARY_TIMEOUT}s)..."
     deadline=$(( SECONDS + NOTARY_TIMEOUT ))
     unexpected=0
     while :; do
-        if out="$(xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE_PATH" -exportPath "$NOTARIZED_DIR" 2>&1)"; then
+        if out="$(xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE_PATH" -exportPath "$NOTARIZED_DIR" \
+                      ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} 2>&1)"; then
             printf '%s\n' "$out" >>"$LOG_PATH"
             break
         fi

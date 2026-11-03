@@ -94,10 +94,19 @@ make release VERSION=1.2.3            # notarized universal app (dmg + zip) -> G
 make release VERSION=1.2.3 DRY_RUN=1  # Developer ID-signed dmg and zip in dist/ only; nothing notarized or published
 ```
 
-Releases are signed and notarized with the Apple account signed into Xcode
-(Xcode › Settings › Accounts); there are no certificates, passwords or notary profiles to
-set up. The account needs the Account Holder or Admin role on the team, with access to
-cloud-managed Developer ID certificates. Building the disk image also needs
+Releases are signed and notarized with an App Store Connect API key; there are no
+certificates, passwords or notary profiles to set up. Put the key in a `.env` file at the
+repo root (gitignored), or export the same variables:
+
+```sh
+ASC_KEY_ID=ABC123DEFG
+ASC_ISSUER_ID=12345678-abcd-...
+ASC_KEY_PATH=~/private_keys/AuthKey_ABC123DEFG.p8
+```
+
+The key needs the Admin role on the team, with access to cloud-managed Developer ID
+certificates. Without a key the script falls back to the Apple account signed into Xcode
+(Xcode › Settings › Accounts), which needs the Account Holder or Admin role. Building the disk image also needs
 [uv](https://docs.astral.sh/uv/): the release runs a pinned
 [dmgbuild](https://github.com/dmgbuild/dmgbuild) through `uvx`.
 
@@ -105,7 +114,7 @@ cloud-managed Developer ID certificates. Building the disk image also needs
 origin, sets `CFBundleShortVersionString` to the version and `CFBundleVersion` to the
 commit count, commits and tags `vX.Y.Z` locally, and builds a universal (arm64 + x86_64)
 app. It wraps the app in an `.xcarchive` and exports it with `xcodebuild -exportArchive
--allowProvisioningUpdates` (method `developer-id`), which signs it with a cloud-managed
+-allowProvisioningUpdates` (method `developer-id`, authenticated with the API key), which signs it with a cloud-managed
 Developer ID certificate and uploads it to Apple's notary service, then waits for
 `xcodebuild -exportNotarizedApp` to return the notarized, stapled app. It packages that
 as `dist/ClaudeTray-X.Y.Z.dmg` (the app beside an Applications link, laid out by
