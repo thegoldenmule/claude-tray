@@ -50,8 +50,8 @@ To build from source:
 
 The weekly limit is judged against an even spend of the budget over the window's
 working time. By default that's weekdays only (by your Mac's calendar and time zone),
-so after one of five weekdays you're expected to have used 20%. Tick "Count weekends in
-weekly pace" in the panel to spread it over all seven days. The window is the server's
+so after one of five weekdays you're expected to have used 20%. Turn on Settings › "Count
+Weekends in Weekly Pace" in the panel to spread it over all seven days. The window is the server's
 (e.g. Wednesday 4 AM to Wednesday 4 AM), not a calendar week.
 
 - **Menu bar** (weekly mode): the bar shows usage, and a tick marks where you'd be at an
