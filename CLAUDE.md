@@ -9,8 +9,9 @@ See README.md for how it works, building, and releasing.
   `make test` passes, without waiting to be asked. Don't leave finished work uncommitted
   across turns. Small, focused commits with messages that say why.
 - Push and release only when asked (`git push`, `make release`).
-- Work only in this repo. Sibling repos (e.g. `../claude-watcher`) are reference material:
-  read them, never change them or offer to.
+- Work in this repo. Sibling repos (e.g. `../claude-watcher`) are reference material: read
+  them, and change them only when explicitly asked (then follow that repo's CLAUDE.md). Never
+  offer to.
 
 ## Commands
 
