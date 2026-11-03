@@ -64,7 +64,7 @@ weekly pace" in the panel to spread it over all seven days. The window is the se
   usage still counts.
 - **Panel**: the same bar and tick, how far off pace you are, and when you'd run out (or
   where you'd end the week) at this week's average rate.
-- **Settings** (in the panel): count weekends, tolerance (±5 / ±10 / ±20% of the
+- **Settings** (the panel's Settings menu): launch at login, count weekends, tolerance (±5 / ±10 / ±20% of the
   budget at reset, default ±10%), and what the menu bar shows. Auto shows the session bar when your
   account has a session limit and weekly pace when it doesn't, or when the weekly limit
   is about to run out first.
@@ -143,13 +143,13 @@ Override the team with `TEAM_ID=...`.
 
 ## Launch at login
 
-Tick "Launch at login" in the panel once and it stays correct across rebuilds.
-The checkbox shows your choice; a caption under it explains when the system
-disagrees (a link to System Settings › Login Items if macOS needs approval, or the
+Turn on Settings › "Launch at Login" in the panel once and it stays correct across
+rebuilds. The checkmark shows your choice; a caption in the panel explains when the
+system disagrees (a link to System Settings › Login Items if macOS needs approval, or the
 registration error). While the choice is on, every launch re-registers the login
 item (via `SMAppService`) from the running copy, so reinstalling, `make clean`, or
 moving the app doesn't silently break it. If you turn ClaudeTray off in System
-Settings › Login Items, the app respects that and doesn't re-register. The toggle
+Settings › Login Items, the app respects that and doesn't re-register. The item
 is disabled under `make dev`, since a bare executable can't be a login item.
 
 ## Caveats

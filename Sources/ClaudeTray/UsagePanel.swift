@@ -54,24 +54,18 @@ struct UsagePanel: View {
 
             Divider()
 
-            paceSettingsSection
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Toggle("Launch at login", isOn: launchAtLoginBinding)
-                    .toggleStyle(.checkbox)
-                    .disabled(!LaunchAtLogin.isAvailable)
-                    .help(LaunchAtLogin.isAvailable ? "" : "Only available when running the app bundle")
-                launchAtLoginNote
-            }
+            launchAtLoginNote
 
             updateRow
 
-            Button("Quit ClaudeTray") {
-                NSApp.terminate(nil)
+            HStack {
+                settingsMenu
+                Spacer()
+                Button("Quit ClaudeTray") {
+                    NSApp.terminate(nil)
+                }
+                .keyboardShortcut("q")
             }
-            .keyboardShortcut("q")
         }
         .padding(14)
         .frame(width: 280, alignment: .leading)
@@ -89,26 +83,30 @@ struct UsagePanel: View {
         PaceSettings(countWeekends: countWeekends, tolerance: tolerance)
     }
 
-    private var paceSettingsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Count weekends in weekly pace", isOn: $countWeekends)
-                .toggleStyle(.checkbox)
-                .help("Off: the weekly budget is paced over weekdays only, and pace pauses on weekends.")
-            Picker("Pace tolerance", selection: $tolerance) {
+    /// Settings live in a pull-down menu so the panel stays about usage.
+    private var settingsMenu: some View {
+        Menu {
+            Toggle("Launch at Login", isOn: launchAtLoginBinding)
+                .disabled(!LaunchAtLogin.isAvailable)
+            Toggle("Count Weekends in Weekly Pace", isOn: $countWeekends)
+            Divider()
+            Picker("Pace Tolerance", selection: $tolerance) {
                 ForEach(PaceSettings.toleranceChoices, id: \.self) { points in
-                    Text("±\(Int(points))%").tag(points)
+                    Text(verbatim: "±\(Int(points))%").tag(points)
                 }
             }
-            .help("On pace means this week's rate ends the week within this much of the full budget")
-            Picker("Menu bar shows", selection: $menuBarMode) {
+            .pickerStyle(.menu)
+            Picker("Menu Bar Shows", selection: $menuBarMode) {
                 ForEach(MenuBarMode.allCases, id: \.self) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
-            .help("Auto shows weekly pace when there's no session limit, or when the weekly limit will run out first")
+            .pickerStyle(.menu)
+        } label: {
+            Label("Settings", systemImage: "gearshape")
         }
-        .pickerStyle(.menu)
         .fixedSize()
+        .help("Launch at login, weekly pace and menu bar options")
     }
 
     // MARK: - Updates
@@ -218,7 +216,7 @@ struct UsagePanel: View {
     @ViewBuilder
     private var launchAtLoginNote: some View {
         if !LaunchAtLogin.isAvailable {
-            Text("Not available under `swift run`; use `make run`.")
+            Text("Launch at login isn't available under `swift run`; use `make run`.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if loginWanted, loginStatus == .requiresApproval {
