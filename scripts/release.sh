@@ -28,6 +28,9 @@
 #   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH
 #                    App Store Connect API key (path to its AuthKey_<id>.p8; ~ allowed).
 #                    Read from .env when not set in the environment.
+#   RELEASE_AUTH     auto (default): the API key if configured, else the Xcode account.
+#                    key / xcode: force one. An API key can't use cloud-managed Developer
+#                    ID certificates (Apple answers 403), so cloud signing needs xcode.
 #
 # Build number (CFBundleVersion): the number of commits on main including the release
 # commit (`git rev-list --count HEAD` + 1), bumped past the current value if that would
@@ -52,6 +55,7 @@ DRY_RUN="${DRY_RUN:-}"
 TEAM_ID="${TEAM_ID:-QKMK66X2FU}"
 NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-1800}"
 NOTARY_POLL=30
+RELEASE_AUTH="${RELEASE_AUTH:-auto}"
 case "$DRY_RUN" in 1|true|yes) DRY_RUN=1 ;; *) DRY_RUN=0 ;; esac
 
 cd "$REPO_ROOT"
@@ -128,6 +132,7 @@ else
         || die "VERSION '$VERSION' must be MAJOR.MINOR.PATCH, e.g. 1.2.3 (CFBundleShortVersionString allows only digits and dots)"
 fi
 [[ "$NOTARY_TIMEOUT" =~ ^[0-9]+$ ]] || die "NOTARY_TIMEOUT must be a number of seconds"
+case "$RELEASE_AUTH" in auto|key|xcode) ;; *) die "RELEASE_AUTH must be auto, key or xcode" ;; esac
 TAG="v$VERSION"
 ok "version $VERSION (tag $TAG)"
 
@@ -179,10 +184,17 @@ env_from_dotenv() {
     value="${value%\"}"; value="${value#\"}"
     printf -v "$name" '%s' "$value"
 }
-for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH; do env_from_dotenv "$name"; done
 ASC_KEY_ID="${ASC_KEY_ID:-}" ASC_ISSUER_ID="${ASC_ISSUER_ID:-}" ASC_KEY_PATH="${ASC_KEY_PATH:-}"
+if [[ "$RELEASE_AUTH" != xcode ]]; then
+    for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH; do env_from_dotenv "$name"; done
+fi
 ASC_KEY_PATH="${ASC_KEY_PATH/#\~/$HOME}"
 AUTH_ARGS=()
+if [[ "$RELEASE_AUTH" == xcode ]]; then
+    ASC_KEY_ID="" ASC_ISSUER_ID="" ASC_KEY_PATH=""
+elif [[ "$RELEASE_AUTH" == key && -z "$ASC_KEY_ID$ASC_ISSUER_ID$ASC_KEY_PATH" ]]; then
+    die "RELEASE_AUTH=key but no App Store Connect API key: set ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH (environment or .env)"
+fi
 if [[ -n "$ASC_KEY_ID" && -n "$ASC_ISSUER_ID" && -n "$ASC_KEY_PATH" ]]; then
     [[ -r "$ASC_KEY_PATH" ]] || die "ASC_KEY_PATH does not point to a readable .p8 file"
     AUTH_ARGS=(-authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID"

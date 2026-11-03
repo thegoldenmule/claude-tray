@@ -106,7 +106,11 @@ ASC_KEY_PATH=~/private_keys/AuthKey_ABC123DEFG.p8
 
 The key needs the Admin role on the team, with access to cloud-managed Developer ID
 certificates. Without a key the script falls back to the Apple account signed into Xcode
-(Xcode › Settings › Accounts), which needs the Account Holder or Admin role. Building the disk image also needs
+(Xcode › Settings › Accounts), which needs the Account Holder or Admin role.
+`RELEASE_AUTH=xcode make release VERSION=…` forces the Xcode account even when a key is
+configured: Apple refuses cloud-managed Developer ID signing to API keys (403
+"You haven't been given access to cloud-managed distribution certificates"), even Admin
+ones, so cloud signing currently needs the Xcode account. Building the disk image also needs
 [uv](https://docs.astral.sh/uv/): the release runs a pinned
 [dmgbuild](https://github.com/dmgbuild/dmgbuild) through `uvx`.
 
