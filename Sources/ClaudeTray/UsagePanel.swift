@@ -7,6 +7,9 @@ struct UsagePanel: View {
     @State private var loginWanted = false
     @State private var loginStatus: SMAppService.Status = .notRegistered
     @State private var loginError: String?
+    @AppStorage(SettingsKey.countWeekends) private var countWeekends = false
+    @AppStorage(SettingsKey.tolerance) private var tolerance = PaceSettings().tolerance
+    @AppStorage(SettingsKey.menuBarMode) private var menuBarMode = MenuBarMode.auto
 
     init(model: UsageModel) {
         self.model = model
@@ -19,8 +22,13 @@ struct UsagePanel: View {
 
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 VStack(alignment: .leading, spacing: 12) {
-                    UsageRow(title: "Session", window: model.snapshot?.session, now: context.date)
-                    UsageRow(title: "Weekly", window: model.snapshot?.weekly, now: context.date)
+                    // Accounts without a session limit get only the weekly row.
+                    if model.snapshot == nil || model.snapshot?.session != nil {
+                        UsageRow(title: "Session", window: model.snapshot?.session, now: context.date)
+                    }
+                    WeeklyRow(window: model.snapshot?.weekly,
+                              pace: model.weeklyPace(at: context.date, settings: paceSettings),
+                              now: context.date)
                 }
             }
 
@@ -44,6 +52,10 @@ struct UsagePanel: View {
 
             Divider()
 
+            paceSettingsSection
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 2) {
                 Toggle("Launch at login", isOn: launchAtLoginBinding)
                     .toggleStyle(.checkbox)
@@ -64,6 +76,34 @@ struct UsagePanel: View {
             syncLaunchAtLogin()
             Task { await model.refresh(userInitiated: true) }
         }
+    }
+
+    // MARK: - Pace settings
+
+    private var paceSettings: PaceSettings {
+        PaceSettings(countWeekends: countWeekends, tolerance: tolerance)
+    }
+
+    private var paceSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Count weekends in weekly pace", isOn: $countWeekends)
+                .toggleStyle(.checkbox)
+                .help("Off: the weekly budget is paced over weekdays only, and pace pauses on weekends.")
+            Picker("Pace tolerance", selection: $tolerance) {
+                ForEach(PaceSettings.toleranceChoices, id: \.self) { points in
+                    Text("±\(Int(points))%").tag(points)
+                }
+            }
+            .help("On pace means this week's rate ends the week within this much of the full budget")
+            Picker("Menu bar shows", selection: $menuBarMode) {
+                ForEach(MenuBarMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .help("Auto shows weekly pace when there's no session limit, or when the weekly limit will run out first")
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
     }
 
     // MARK: - Status line
@@ -174,6 +214,112 @@ private struct UsageRow: View {
     }
 }
 
+/// The weekly limit with its pace: a bar with a tick where usage would be at an even pace,
+/// then how far off pace it is and where it's heading.
+private struct WeeklyRow: View {
+    let window: UsageWindow?
+    let pace: WeeklyPace?
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Weekly")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                if let window {
+                    Text("\(Int(window.displayPercent(at: now).rounded()))%")
+                        .font(.subheadline)
+                        .monospacedDigit()
+                }
+            }
+            if let window {
+                let percent = window.displayPercent(at: now)
+                ProgressView(value: min(max(percent / 100, 0), 1))
+                    .progressViewStyle(.linear)
+                    .tint(pace?.severity.tint ?? UsageLevel(percent: percent).tint)
+                    .overlay { paceTick }
+                if let pace {
+                    paceDetails(pace)
+                }
+                Text(window.hasReset(at: now) ? "Reset — waiting for update" : resetCaption(for: window.resetsAt, now: now))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else {
+                ProgressView(value: 0)
+                    .progressViewStyle(.linear)
+                Text("No data")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var paceTick: some View {
+        if let pace, pace.status != .limitReached {
+            GeometryReader { geometry in
+                Capsule()
+                    .fill(.primary.opacity(pace.pausedUntil == nil ? 0.85 : 0.35))
+                    .frame(width: 2, height: 12)
+                    .position(x: geometry.size.width * min(max(pace.expected / 100, 0), 1),
+                              y: geometry.size.height / 2)
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func paceDetails(_ pace: WeeklyPace) -> some View {
+        Text(headline(pace))
+            .font(.caption.weight(.medium))
+            .foregroundStyle(pace.severity.textTint)
+        if let pausedUntil = pace.pausedUntil {
+            caption(pausedUntil >= pace.resetsAt
+                    ? "Weekend — pace paused until reset"
+                    : "Weekend — pace paused until \(resetClockText(pausedUntil, now: now))")
+        }
+        if let runway = runway(pace) {
+            caption(runway)
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func headline(_ pace: WeeklyPace) -> String {
+        let expected = "expected \(Int(pace.expected.rounded()))%"
+        let points = Int(abs(pace.delta).rounded())
+        switch pace.status {
+        case .limitReached: return "Limit reached"
+        case .tooEarly: return "Too early to tell pace · \(expected)"
+        case .onTrack: return "On pace · \(expected)"
+        case .over: return "\(points) pts over pace · \(expected)"
+        case .under: return "\(points) pts under pace · \(expected)"
+        }
+    }
+
+    /// "At this rate, runs out Thu 2:15 PM" / "At this rate, ends the week at 47%".
+    private func runway(_ pace: WeeklyPace) -> String? {
+        if let runsOutAt = pace.runsOutAt {
+            // The projection isn't minute-accurate; show it to the quarter hour.
+            let rounded = Date(timeIntervalSinceReferenceDate: (runsOutAt.timeIntervalSinceReferenceDate / 900).rounded() * 900)
+            return "At this rate, runs out \(resetClockText(rounded, now: now))"
+        }
+        if let projected = pace.projectedAtReset {
+            return "At this rate, ends the week at \(Int(min(projected, 100).rounded()))%"
+        }
+        return nil
+    }
+}
+
 private struct StatusMessage: View {
     let message: String
     let tint: Color
@@ -191,6 +337,24 @@ private struct StatusMessage: View {
 }
 
 // MARK: - Helpers
+
+private extension PaceSeverity {
+    var tint: Color {
+        switch self {
+        case .calm: .accentColor
+        case .warning: .orange
+        case .critical: .red
+        }
+    }
+
+    var textTint: Color {
+        switch self {
+        case .calm: .secondary
+        case .warning: .orange
+        case .critical: .red
+        }
+    }
+}
 
 private extension UsageLevel {
     var tint: Color {

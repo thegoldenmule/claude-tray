@@ -1,8 +1,9 @@
 # ClaudeTray
 
 A tiny native macOS menu bar app that shows your Claude usage limits at a glance.
-The menu bar shows a progress bar for the current session (5-hour) window; click it
-for a panel with both the session and weekly limits and when each resets.
+The menu bar shows a progress bar for the current session (5-hour) window, or, for
+accounts without a session limit, how your weekly usage is pacing. Click it for a panel
+with both limits, when each resets, and whether you're on track to last the week.
 
 <img src="docs/screenshot.png" alt="ClaudeTray menu bar item with its usage panel open" width="328">
 
@@ -30,7 +31,9 @@ To build from source:
   creates that item with the same tool, so normally no Keychain prompt appears; if
   macOS does ask, choose "Always Allow".
 - Calls the undocumented `GET https://api.anthropic.com/api/oauth/usage` endpoint
-  and displays the `five_hour` (session) and `seven_day` (weekly) utilization.
+  and displays the `five_hour` (session) and `seven_day` (weekly) utilization, falling
+  back to the response's `limits` array. Some accounts no longer have a session limit
+  (`five_hour` is null); for those only the weekly limit is shown.
 - Never refreshes or writes the token. If it has expired or the server rejects it
   (401/403), the app shows stale data until Claude Code refreshes it (just use
   Claude Code as normal). Meanwhile it re-checks the Keychain every minute and calls
@@ -43,6 +46,29 @@ To build from source:
   30 minutes, or up to an hour if the server's `Retry-After` asks). Opening the panel
   or clicking refresh fetches immediately, at most once per minute.
 
+## Weekly pace
+
+The weekly limit is judged against an even spend of the budget over the window's
+working time. By default that's weekdays only (by your Mac's calendar and time zone),
+so after one of five weekdays you're expected to have used 20%. Tick "Count weekends in
+weekly pace" in the panel to spread it over all seven days. The window is the server's
+(e.g. Wednesday 4 AM to Wednesday 4 AM), not a calendar week.
+
+- **Menu bar** (weekly mode): the bar shows usage, and a tick marks where you'd be at an
+  even pace. The label is how many points over (`+30`) or under (`−12`) pace you are,
+  `✓` when you're within the tolerance (your rate would end the week within ±10% of the
+  budget, so the allowed gap is ±1 point when 10% is expected and ±9 when 90% is), or the plain percentage when it's too early to
+  tell or the limit is reached. The bar turns orange when you're over pace, and red when
+  the current rate runs out a full working day or more before the reset (or at 100%).
+  On weekends with weekdays-only pacing the tick dims: pace is paused, though weekend
+  usage still counts.
+- **Panel**: the same bar and tick, how far off pace you are, and when you'd run out (or
+  where you'd end the week) at this week's average rate.
+- **Settings** (in the panel): count weekends, tolerance (±5 / ±10 / ±20% of the
+  budget at reset, default ±10%), and what the menu bar shows. Auto shows the session bar when your
+  account has a session limit and weekly pace when it doesn't, or when the weekly limit
+  is about to run out first.
+
 ## Build and run
 
 ```sh
@@ -50,6 +76,7 @@ make run       # build, install to ~/Applications/ClaudeTray.app, quit any runni
 make install   # same, without launching
 make app       # release build -> build/ClaudeTray.app, codesigned (staging only)
 make dev       # swift run, no app bundle (quick iteration)
+make test      # unit tests (pace math, response parsing)
 make clean
 make icon            # regenerate Resources/AppIcon.icns from scripts/make-icon.swift
 make dmg-background  # regenerate the release disk image's background in Resources/

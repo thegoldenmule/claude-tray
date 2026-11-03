@@ -20,7 +20,7 @@ ifeq ($(strip $(SIGN_IDENTITY)),)
 override SIGN_IDENTITY := -
 endif
 
-.PHONY: build app run install clean dev release icon dmg-background
+.PHONY: build app run install clean dev test release icon dmg-background
 
 build:
 	$(SWIFT_BUILD)
@@ -54,6 +54,9 @@ clean:
 
 dev:
 	swift run
+
+test:
+	swift test
 
 # Regenerates Resources/AppIcon.icns from scripts/make-icon.swift (the .icns is committed).
 icon:

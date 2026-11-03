@@ -89,8 +89,28 @@ enum UsageAPI {
         guard let body = try? JSONDecoder().decode(ResponseBody.self, from: data) else {
             throw UsageAPIError.decoding
         }
-        return UsageSnapshot(session: body.fiveHour?.window,
-                             weekly: body.sevenDay?.window,
+        let limits = body.limits ?? []
+        // The flat `seven_day` / `five_hour` keys are the original shape; newer responses
+        // also carry a `limits` array, which some accounts may get instead.
+        let weeklyLimit = limits.first { $0.kind == "weekly_all" }
+        var weekly = body.sevenDay?.window ?? weeklyLimit?.window
+        if weekly != nil, weekly?.resetsAt == nil {
+            weekly?.resetsAt = weeklyLimit?.resetsAt.flatMap(parseDate)
+        }
+        // The server states the window start; only trust it if it's consistent with the reset.
+        if let resetsAt = weekly?.resetsAt,
+           let start = body.sevenDayBreakdown?.windowStartedAt.flatMap(parseDate) {
+            let length = resetsAt.timeIntervalSince(start)
+            if length > 6 * 86_400, length < 8 * 86_400 { weekly?.startsAt = start }
+        }
+        // `five_hour` is null on accounts without a session limit.
+        let sessionLimit = limits.first { limit in
+            limit.isActive != false && [limit.kind, limit.group].contains { name in
+                name.map { $0.contains("session") || $0.contains("five_hour") } ?? false
+            }
+        }
+        return UsageSnapshot(session: body.fiveHour?.window ?? sessionLimit?.window,
+                             weekly: weekly,
                              fetchedAt: fetchedAt)
     }
 
@@ -124,17 +144,66 @@ enum UsageAPI {
     private struct ResponseBody: Decodable {
         let fiveHour: Window?
         let sevenDay: Window?
+        let limits: [Limit]?
+        let sevenDayBreakdown: Breakdown?
 
         enum CodingKeys: String, CodingKey {
             case fiveHour = "five_hour"
             case sevenDay = "seven_day"
+            case limits
+            case sevenDayBreakdown = "seven_day_breakdown"
         }
 
-        // Lenient: a malformed window becomes nil instead of failing the whole response.
+        // Lenient: a malformed field becomes nil instead of failing the whole response.
         init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             fiveHour = try? c.decodeIfPresent(Window.self, forKey: .fiveHour)
             sevenDay = try? c.decodeIfPresent(Window.self, forKey: .sevenDay)
+            limits = try? c.decodeIfPresent([Limit].self, forKey: .limits)
+            sevenDayBreakdown = try? c.decodeIfPresent(Breakdown.self, forKey: .sevenDayBreakdown)
+        }
+    }
+
+    /// An entry of `limits`, e.g. `{"kind": "weekly_all", "group": "weekly", "percent": 40,
+    /// "resets_at": "...", "is_active": true}`.
+    private struct Limit: Decodable {
+        let kind: String?
+        let group: String?
+        let percent: Double?
+        let resetsAt: String?
+        let isActive: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case kind, group, percent
+            case resetsAt = "resets_at"
+            case isActive = "is_active"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try? c.decodeIfPresent(String.self, forKey: .kind)
+            group = try? c.decodeIfPresent(String.self, forKey: .group)
+            percent = try? c.decodeIfPresent(Double.self, forKey: .percent)
+            resetsAt = try? c.decodeIfPresent(String.self, forKey: .resetsAt)
+            isActive = try? c.decodeIfPresent(Bool.self, forKey: .isActive)
+        }
+
+        var window: UsageWindow? {
+            guard let percent, percent.isFinite else { return nil }
+            return UsageWindow(percent: percent, resetsAt: resetsAt.flatMap(UsageAPI.parseDate))
+        }
+    }
+
+    private struct Breakdown: Decodable {
+        let windowStartedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case windowStartedAt = "window_started_at"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            windowStartedAt = try? c.decodeIfPresent(String.self, forKey: .windowStartedAt)
         }
     }
 

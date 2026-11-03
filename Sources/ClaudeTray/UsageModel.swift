@@ -7,6 +7,8 @@ import Observation
 struct UsageWindow: Sendable, Equatable {
     var percent: Double
     var resetsAt: Date?
+    /// When the window began, if the server says (weekly only).
+    var startsAt: Date? = nil
 }
 
 struct UsageSnapshot: Sendable, Equatable {
@@ -75,6 +77,16 @@ final class UsageModel {
     }
 
     init() {}
+
+    /// Weekly pace at `now`, or nil without a current weekly window.
+    func weeklyPace(at now: Date, settings: PaceSettings) -> WeeklyPace? {
+        guard let weekly = snapshot?.weekly, let resetsAt = weekly.resetsAt, !weekly.hasReset(at: now) else { return nil }
+        return WeeklyPace.compute(used: weekly.percent,
+                                  windowStart: weekly.startsAt ?? resetsAt.addingTimeInterval(-7 * 86_400),
+                                  resetsAt: resetsAt,
+                                  now: now,
+                                  settings: settings)
+    }
 
     /// Begins polling. Idempotent.
     func start() {
