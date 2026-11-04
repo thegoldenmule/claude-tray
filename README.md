@@ -5,7 +5,7 @@ The menu bar shows a progress bar for the current session (5-hour) window, or, f
 accounts without a session limit, how your weekly usage is pacing. Click it for a panel
 with both limits, when each resets, and whether you're on track to last the week.
 
-<img src="docs/screenshot.png" alt="ClaudeTray menu bar item with its usage panel open" width="328">
+<img src="docs/screenshot.png" alt="ClaudeTray menu bar item with its usage panel open" width="299">
 
 ## Install
 
